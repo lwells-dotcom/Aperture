@@ -1,0 +1,118 @@
+# Atlas Helm Chart - Default Values
+# Override these in your environment-specific values file or via --set
+#
+# Deployment target: Kind (local Kubernetes in Docker)
+# Images are loaded via `kind load docker-image` -- no remote registry needed.
+
+# ---------------------------------------------------------------------------
+# Web application (Flask + Gunicorn)
+# ---------------------------------------------------------------------------
+web:
+  # Single replica avoids cross-pod USER_CONTEXT isolation
+  # and RWO PVC mount conflicts. Scale via threads, not pods.
+  # To scale to multiple replicas: switch uploads PVC to
+  # ReadWriteMany and add session affinity to the web service.
+  replicaCount: 1
+  image:
+    repository: atlas-web
+    tag: "1.0.0"
+    pullPolicy: Never  # Image loaded into Kind directly, no registry pull
+  port: 5050
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  env:
+    port: "5050"
+    uploadDir: /app/uploads
+    anthropicModel: claude-sonnet-4-6
+    # SOX compliance (0 = keyword-triggered only, 1 = always on)
+    soxAlwaysOn: "0"
+  # Liveness/readiness probe path
+  healthPath: /api/health
+  # Node selector (optional)
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# PostgreSQL (StatefulSet)
+# ---------------------------------------------------------------------------
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  port: 5432
+  database: atlas
+  user: atlas
+  # Password is pulled from the Secret (see secrets section below)
+  storage:
+    size: 10Gi
+    storageClass: standard  # Kind default storage class
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  nodeSelector: {}
+
+# ---------------------------------------------------------------------------
+# Secrets (created as K8s Secrets, populate before first deploy)
+# ---------------------------------------------------------------------------
+secrets:
+  # DB password - set via --set or values override, never commit the real value
+  dbPassword: ""
+  # Auth
+  # REQUIRED: set via --set secrets.demoVerifyPin=<value>
+  demoVerifyPin: ""
+  demoTokenSecret: ""
+  demoTokenTtlSeconds: "900"
+  # LLM API keys
+  anthropicApiKey: ""
+  openaiApiKey: ""
+  # Netbox API token (optional, only needed if NetBox streaming endpoints are used)
+  netboxApiToken: ""
+  # Google Sheets API (optional, pending service account key)
+  googleSaKeyJson: ""
+
+# ---------------------------------------------------------------------------
+# Netbox (optional, used by /api/stream/netbox endpoints)
+# ---------------------------------------------------------------------------
+netbox:
+  baseUrl: "https://coreweave.cloud.netboxapp.com/api"
+
+# ---------------------------------------------------------------------------
+# Persistent Volume for uploads
+# ---------------------------------------------------------------------------
+uploads:
+  size: 5Gi
+  storageClass: ""
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 5050
+
+# ---------------------------------------------------------------------------
+# Ingress (disabled by default, toggle for external access later)
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# ---------------------------------------------------------------------------
+# Schema init job (runs atlas_schema.sql on first deploy)
+# ---------------------------------------------------------------------------
+schemaInit:
+  enabled: true

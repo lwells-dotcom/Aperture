@@ -1,0 +1,19 @@
+# Configuration YAML file to be used with the Jira_monitoring.py
+#
+#Jira user names of people that will recieve tickets
+# IE: Brice Lucero or blucero will work
+usernames:
+  -                    # Name as listed in JIRA IE: Brice Lucero
+  -                    # Or the Username can be used blucero
+#
+# User
+email:                  ### User Email IE: myname@coreweave.com
+jira:                  ### API Key
+#
+# Site Variables
+data_center:     ## Example for Quincy US-QNC01
+loc:             ## Example with wildcard US-WEST-09*
+#
+# Duration and refresh rate
+interval_seconds: 30
+duration_hours: 12

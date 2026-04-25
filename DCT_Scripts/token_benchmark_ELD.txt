@@ -1,0 +1,83 @@
+=========================================================================================================
+  Atlas Token Usage Benchmark  --  H1 Hypothesis Test
+  Site: ELD  |  Questions: 25  |  2026-04-15 20:50
+=========================================================================================================
+
+Token estimate: len(json.dumps(context)) / 4  (Anthropic ~4 chars/token).
+Fixed overhead (system prompt + user prefix): ~277 tokens per question (same both paths).
+
+In-memory context: CONSTANT across all questions  (9,063 tokens, load=7.93s)
+Postgres context:  PER-QUESTION (targeted SQL result).
+
+Q#    Question (truncated)                         Type                       InMem        PG  Reduction  PG elapsed
+---------------------------------------------------------------------------------------------------------
+Q1    How many QSFP28-100G-DR1-LOW-PWR optics ar.. optic_count                9,063       124      98.6%      0.050s
+Q8    What is the complete optic inventory break.. optic_count                9,063       321      96.5%      0.020s
+Q10   Are there any connections where the A-side.. optic_count                9,063       321      96.5%      0.020s
+Q16   How many cables have a status of "Cable Is.. cable_status               9,063       105      98.8%      0.020s
+Q17   How many connections show a status of LLDP.. connection_status          9,063       109      98.8%      0.020s
+Q18   How many connections show a status of LLDP.. lldp_failures              9,063       103      98.9%           -
+Q19   What percentage of all connections are mar.. connection_status          9,063       109      98.8%      0.020s
+Q21   What is the ratio of LLDP Passed to LLDP F.. connection_status          9,063       109      98.8%      0.020s
+Q24   Which section has the highest number of in.. section_completion         9,063     3,134      65.4%      0.020s
+Q25   Which section has the best completion perc.. section_completion         9,063     3,134      65.4%      0.020s
+Q27   Are there any sections where zero cables a.. section_completion         9,063     3,134      65.4%      0.020s
+Q31   How many unique devices appear on the A-si.. a_device_list              9,063     3,318      63.4%      0.090s
+Q32   How many unique devices appear on the Z-si.. z_device_list              9,063     3,309      63.5%      0.090s
+Q34   How many connections are listed in total i.. site_overview              9,063        84      99.1%      0.060s
+Q35   How many topology sections are defined in .. section_summary            9,063     3,034      66.5%      0.100s
+Q37   How many TIER-3 TO TIER-2 connections are .. section_summary            9,063       134      98.5%      0.030s
+Q41   What is the connection count for the OOB-F.. section_summary            9,063        94      99.0%      0.030s
+Q46   How many CPU-GP2-02 devices appear in the .. model_search               9,063       462      94.9%      0.100s
+Q48   How many SN4700 switches are in the dataset? model_search               9,063       363      96.0%      0.100s
+Q58   What is the complete device model inventor.. model_search               9,063       458      94.9%      0.070s
+Q62   How many connections have the exact status.. lldp_failures              9,063       103      98.9%           -
+Q67   Are there any connections where the curren.. lldp_neighbor_mismatch     9,063        72      99.2%           -
+Q73   How many racks are represented in the cuts.. rack_summary               9,063       803      91.1%      0.070s
+Q77   Which rack has the highest number of conne.. rack_summary               9,063       803      91.1%      0.070s
+Q91   Are there any Z-MODEL values where the sam.. model_search               9,063       458      94.9%      0.070s
+---------------------------------------------------------------------------------------------------------
+
+SUMMARY STATISTICS
+--------------------------------------------------
+  Questions with valid measurements:  25 / 25
+  Questions with Postgres errors:     0
+
+  In-memory context tokens (each):         9,063  (same for all questions)
+  Postgres avg context tokens:               968
+  Postgres median context tokens:            321
+  Postgres min context tokens:                72
+  Postgres max context tokens:             3,318
+
+  Average token reduction:                 89.3%  (H1 claim: 60-80%)
+  Total reduction (sum over 25 Qs):         89.3%
+  Total in-memory tokens (25 Qs):        226,575
+  Total Postgres tokens (25 Qs):          24,198
+  Tokens saved (25 Qs):                  202,377
+
+  H1 VERDICT:  CONFIRMED (exceeds 60% threshold)
+
+  Full prompt estimate (context + ~277 overhead):
+    In-memory: ~9,340 tokens per question
+    Postgres avg: ~1,245 tokens per question
+    Full-prompt reduction: 86.7%
+
+
+BY QUESTION TYPE
+----------------------------------------------------------------------
+  Type                         n    Avg PG tok   Reduction
+  --------------------------------------------------------
+  a_device_list                1         3,318       63.4%
+  cable_status                 1           105       98.8%
+  connection_status            3           109       98.8%
+  lldp_failures                2           103       98.9%
+  lldp_neighbor_mismatch       1            72       99.2%
+  model_search                 4           435       95.2%
+  optic_count                  3           255       97.2%
+  rack_summary                 2           803       91.1%
+  section_completion           3         3,134       65.4%
+  section_summary              3         1,087       88.0%
+  site_overview                1            84       99.1%
+  z_device_list                1         3,309       63.5%
+
+=========================================================================================================

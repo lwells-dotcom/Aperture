@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-atlas}
+    ports:
+      - "${DB_PORT:-9000}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./atlas_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    shm_size: 256mb
+
+  web:
+    build: .
+    ports:
+      - "${WEB_PORT:-5050}:5050"
+    environment:
+      PORT: "5050"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: atlas
+      DB_USER: atlas
+      DB_PASSWORD: ${DB_PASSWORD:-atlas}
+      DEMO_UPLOAD_DIR: /app/uploads
+      DEMO_VERIFY_PIN: ${DEMO_VERIFY_PIN:?Set DEMO_VERIFY_PIN in .env}
+      DEMO_TOKEN_SECRET: ${DEMO_TOKEN_SECRET:?Set DEMO_TOKEN_SECRET in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      DATABASE_URL: "postgres://atlas:${DB_PASSWORD:-atlas}@db:5432/atlas"
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:

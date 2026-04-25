@@ -1,0 +1,15 @@
+.env
+.env.example
+.git
+.gitignore
+__pycache__
+*.pyc
+uploads/
+*.xlsx
+*.csv
+test_*.py
+diagnose_*.py
+query_debug.py
+knowledge/
+helm/
+*.md

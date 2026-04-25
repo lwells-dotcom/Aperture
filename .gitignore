@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+
+# AI/Claude/Cursor temp
+.omc/
+.omx/
+.playwright-mcp/
+.claude/
+.cursorrules
+
+# Data / Temp
+raw/
+*.xlsx
+*.log
+
+# Environment
+.env*
+
+# Build
+node_modules/
+dist/
+build/
+
+# Ignore nested git repos completely
+DCT_Scripts/.git
+DCT_Scripts/**/.git

@@ -1,0 +1,11 @@
+{{- if .Values.schemaInit.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atlas.fullname" . }}-schema
+  labels:
+    {{- include "atlas.labels" . | nindent 4 }}
+data:
+  atlas_schema.sql: |
+{{ .Files.Get "files/atlas_schema.sql" | indent 4 }}
+{{- end }}

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: atlas
+description: Atlas DCT Infrastructure Intelligence - Grounded LLM Q&A on datacenter cutsheets
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - datacenter
+  - cutsheet
+  - llm
+  - inventory
+maintainers:
+  - name: Lamar Wells
+    email: lwells@coreweave.com

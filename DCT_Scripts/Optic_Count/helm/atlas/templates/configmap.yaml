@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atlas.configmapName" . }}
+  labels:
+    {{- include "atlas.labels" . | nindent 4 }}
+data:
+  PORT: {{ .Values.web.env.port | quote }}
+  # Both names point to the same PVC mount so demo_web_app.py (reads DEMO_UPLOAD_DIR)
+  # and atlas_web_app.py (reads ATLAS_UPLOAD_DIR) both work.
+  DEMO_UPLOAD_DIR: {{ .Values.web.env.uploadDir | quote }}
+  ATLAS_UPLOAD_DIR: {{ .Values.web.env.uploadDir | quote }}
+  ANTHROPIC_MODEL: {{ .Values.web.env.anthropicModel | quote }}
+  SOX_ALWAYS_ON: {{ .Values.web.env.soxAlwaysOn | quote }}
+  DEMO_TOKEN_TTL_SECONDS: {{ .Values.secrets.demoTokenTtlSeconds | quote }}
+  DB_HOST: {{ include "atlas.fullname" . }}-postgres
+  DB_PORT: {{ .Values.postgres.port | quote }}
+  DB_NAME: {{ .Values.postgres.database | quote }}
+  DB_USER: {{ .Values.postgres.user | quote }}
+  {{- if .Values.netbox.baseUrl }}
+  NETBOX_BASE_URL: {{ .Values.netbox.baseUrl | quote }}
+  {{- end }}

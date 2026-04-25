@@ -1,0 +1,34 @@
+Atlas DCT Infrastructure Intelligence has been deployed.
+
+{{- if .Values.postgres.enabled }}
+Database: {{ .Values.postgres.database }} on {{ include "atlas.fullname" . }}-postgres:{{ .Values.postgres.port }}
+{{- end }}
+
+Web app: {{ include "atlas.fullname" . }}-web:{{ .Values.service.port }}
+
+To access the web app via port-forward:
+
+  kubectl port-forward svc/{{ include "atlas.fullname" . }}-web {{ .Values.service.port }}:{{ .Values.service.port }}
+
+Then open: http://localhost:{{ .Values.service.port }}
+
+To exec into Postgres for user management:
+
+  kubectl exec -it {{ include "atlas.fullname" . }}-postgres-0 -- psql -U {{ .Values.postgres.user }} -d {{ .Values.postgres.database }}
+
+{{- if .Values.ingress.enabled }}
+
+Ingress is enabled. Access via:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- end }}
+
+To check pod status:
+
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+First deploy? Make sure you've set these secrets:
+  - secrets.dbPassword
+  - secrets.demoTokenSecret
+  - secrets.anthropicApiKey

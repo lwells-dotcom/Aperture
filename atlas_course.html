@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Atlas — How Your Datacenter Intelligence App Works</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+/* ========================================================================
+   DESIGN SYSTEM — CSS Custom Properties
+   ======================================================================== */
+:root {
+  /* Warm palette */
+  --bg-primary: #FBF8F3;
+  --bg-secondary: #F3EDE4;
+  --bg-card: #FFFFFF;
+  --bg-code: #1E1E2E;
+  --bg-callout: #FFF8E7;
+  --bg-quiz-correct: #E8F5E9;
+  --bg-quiz-wrong: #FFF3E0;
+
+  /* Text */
+  --text-primary: #2C2420;
+  --text-secondary: #6B5E52;
+  --text-muted: #9A8E82;
+  --text-on-dark: #CDD6F4;
+  --text-on-accent: #FFFFFF;
+
+  /* Accent — Coral/Vermillion */
+  --accent: #E05A33;
+  --accent-light: #FF8A65;
+  --accent-dark: #BF360C;
+  --accent-bg: #FBE9E7;
+
+  /* Semantic */
+  --teal: #00897B;
+  --teal-bg: #E0F2F1;
+  --blue: #1565C0;
+  --blue-bg: #E3F2FD;
+  --purple: #6A1B9A;
+  --purple-bg: #F3E5F5;
+  --gold: #F9A825;
+  --gold-bg: #FFF8E1;
+  --green: #2E7D32;
+  --green-bg: #E8F5E9;
+  --red: #C62828;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(44,36,32,0.06);
+  --shadow-md: 0 4px 12px rgba(44,36,32,0.08);
+  --shadow-lg: 0 8px 24px rgba(44,36,32,0.12);
+
+  /* Spacing */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 40px;
+  --space-9: 48px; --space-10: 64px; --space-11: 80px; --space-12: 96px;
+
+  /* Radius */
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px; --radius-xl: 24px;
+
+  /* Typography */
+  --font-display: 'Bricolage Grotesque', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --text-xs: 0.75rem; --text-sm: 0.875rem; --text-base: 1rem;
+  --text-lg: 1.125rem; --text-xl: 1.25rem; --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem; --text-4xl: 2.25rem; --text-5xl: 3rem;
+}
+
+/* ========================================================================
+   RESET & BASE
+   ======================================================================== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-snap-type: y proximity; scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* ========================================================================
+   NAVIGATION
+   ======================================================================== */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  background: rgba(44,36,32,0.95); backdrop-filter: blur(12px);
+  padding: var(--space-3) var(--space-6);
+  display: flex; align-items: center; gap: var(--space-4);
+  border-bottom: 2px solid var(--accent);
+}
+.nav-logo {
+  font-family: var(--font-display); font-weight: 800;
+  font-size: var(--text-lg); color: var(--accent-light);
+  white-space: nowrap;
+}
+.nav-links {
+  display: flex; gap: var(--space-1); overflow-x: auto;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.nav-links::-webkit-scrollbar { display: none; }
+.nav-link {
+  font-family: var(--font-body); font-size: var(--text-xs); font-weight: 500;
+  color: rgba(255,255,255,0.5); text-decoration: none;
+  padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm);
+  white-space: nowrap; transition: all 0.2s;
+  cursor: pointer;
+}
+.nav-link:hover { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.08); }
+.nav-link.active { color: var(--text-on-accent); background: var(--accent); }
+
+.progress-bar {
+  position: fixed; top: 46px; left: 0; right: 0;
+  height: 3px; background: rgba(44,36,32,0.1); z-index: 99;
+}
+.progress-fill {
+  height: 100%; width: 0%; background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+/* ========================================================================
+   MODULE SECTIONS
+   ======================================================================== */
+.module {
+  min-height: 100dvh; min-height: 100vh;
+  scroll-snap-align: start;
+  padding: var(--space-12) var(--space-6) var(--space-10);
+  max-width: 900px; margin: 0 auto;
+}
+.module:first-of-type { padding-top: calc(var(--space-12) + 50px); }
+.module:nth-child(even) { background: var(--bg-secondary); }
+.module:nth-child(odd) { background: var(--bg-primary); }
+
+/* Make even modules full-bleed background */
+.module-wrapper:nth-child(even) { background: var(--bg-secondary); }
+.module-wrapper:nth-child(odd) { background: var(--bg-primary); }
+.module-wrapper { padding: 0; }
+.module-wrapper .module { padding-left: var(--space-6); padding-right: var(--space-6); }
+
+.module-badge {
+  display: inline-block; font-family: var(--font-mono); font-size: var(--text-xs);
+  font-weight: 600; color: var(--accent); background: var(--accent-bg);
+  padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm);
+  margin-bottom: var(--space-4); letter-spacing: 0.5px;
+}
+.module-title {
+  font-family: var(--font-display); font-weight: 800;
+  font-size: var(--text-4xl); line-height: 1.15;
+  margin-bottom: var(--space-3); color: var(--text-primary);
+}
+.module-subtitle {
+  font-size: var(--text-lg); color: var(--text-secondary);
+  margin-bottom: var(--space-10); max-width: 680px;
+}
+
+/* Screen (sub-section within a module) */
+.screen { margin-bottom: var(--space-12); }
+.screen-title {
+  font-family: var(--font-display); font-weight: 700;
+  font-size: var(--text-2xl); margin-bottom: var(--space-5);
+  color: var(--text-primary);
+}
+
+/* ========================================================================
+   TYPOGRAPHY
+   ======================================================================== */
+p { margin-bottom: var(--space-4); max-width: 680px; }
+strong { font-weight: 600; }
+
+/* ========================================================================
+   CARDS
+   ======================================================================== */
+.card-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-5); margin: var(--space-6) 0;
+}
+.card {
+  background: var(--bg-card); border-radius: var(--radius-md);
+  padding: var(--space-5); box-shadow: var(--shadow-sm);
+  border: 1px solid rgba(44,36,32,0.06);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.card-icon {
+  font-size: 1.8rem; margin-bottom: var(--space-3);
+  width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
+  background: var(--accent-bg); border-radius: var(--radius-sm);
+}
+.card-title {
+  font-family: var(--font-display); font-weight: 700;
+  font-size: var(--text-base); margin-bottom: var(--space-2);
+}
+.card-desc {
+  font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.5;
+}
+
+/* Colored card variants */
+.card.teal .card-icon { background: var(--teal-bg); }
+.card.blue .card-icon { background: var(--blue-bg); }
+.card.purple .card-icon { background: var(--purple-bg); }
+.card.gold .card-icon { background: var(--gold-bg); }
+
+/* ========================================================================
+   CODE ↔ ENGLISH TRANSLATION BLOCKS
+   ======================================================================== */
+.translation-block {
+  display: grid; grid-template-columns: 1fr 1fr;
+  border-radius: var(--radius-md); overflow: visible;
+  box-shadow: var(--shadow-md); margin: var(--space-6) 0;
+  position: relative;
+}
+.translation-code {
+  background: var(--bg-code); padding: var(--space-5);
+  font-family: var(--font-mono); font-size: var(--text-sm);
+  color: var(--text-on-dark); white-space: pre-wrap; word-break: break-word;
+  line-height: 1.7; overflow: visible;
+}
+.translation-english {
+  background: var(--bg-card); padding: var(--space-5);
+  font-size: var(--text-sm); color: var(--text-secondary);
+  line-height: 1.7; border-left: 3px solid var(--accent);
+}
+.translation-header {
+  display: flex; justify-content: space-between;
+  padding: var(--space-2) var(--space-5);
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  font-weight: 600; letter-spacing: 0.5px;
+}
+.translation-header-code { background: #15151F; color: var(--accent-light); }
+.translation-header-eng { background: #F5F0EB; color: var(--text-secondary); }
+
+.code-line { padding: 2px 0; display: block; }
+.eng-line { padding: 2px 0; display: block; font-size: var(--text-sm); }
+.eng-line::before {
+  content: "→ "; color: var(--accent); font-weight: 600;
+}
+
+/* Syntax highlighting (Catppuccin-inspired) */
+.kw { color: #CBA6F7; } /* keyword: purple */
+.fn { color: #89B4FA; } /* function: blue */
+.st { color: #A6E3A1; } /* string: green */
+.cm { color: #6C7086; font-style: italic; } /* comment: gray */
+.nb { color: #FAB387; } /* builtin/number: peach */
+.op { color: #89DCEB; } /* operator: sky */
+.ty { color: #F9E2AF; } /* type: yellow */
+.var { color: #CDD6F4; } /* variable: text */
+.dec { color: #F38BA8; } /* decorator: red */
+
+/* ========================================================================
+   GLOSSARY TOOLTIPS
+   ======================================================================== */
+.term {
+  border-bottom: 1.5px dashed var(--accent-light);
+  cursor: pointer; position: relative;
+  font-weight: 500;
+}
+.tooltip {
+  position: fixed; z-index: 9999;
+  background: var(--bg-code); color: var(--text-on-dark);
+  font-family: var(--font-body); font-size: var(--text-sm);
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-sm);
+  max-width: 320px; line-height: 1.5;
+  box-shadow: var(--shadow-lg); pointer-events: none;
+  opacity: 0; transition: opacity 0.15s;
+}
+.tooltip.visible { opacity: 1; }
+.tooltip::before {
+  content: ''; position: absolute; bottom: -6px; left: 20px;
+  border-left: 6px solid transparent; border-right: 6px solid transparent;
+  border-top: 6px solid var(--bg-code);
+}
+
+/* ========================================================================
+   CALLOUT BOXES
+   ======================================================================== */
+.callout {
+  background: var(--bg-callout); border-left: 4px solid var(--gold);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  padding: var(--space-5); margin: var(--space-6) 0;
+}
+.callout-title {
+  font-family: var(--font-display); font-weight: 700;
+  font-size: var(--text-base); margin-bottom: var(--space-2);
+  color: var(--accent-dark);
+}
+.callout-body { font-size: var(--text-sm); color: var(--text-secondary); }
+
+.callout.teal { background: var(--teal-bg); border-left-color: var(--teal); }
+.callout.teal .callout-title { color: var(--teal); }
+.callout.blue { background: var(--blue-bg); border-left-color: var(--blue); }
+.callout.blue .callout-title { color: var(--blue); }
+
+/* ========================================================================
+   GROUP CHAT ANIMATION
+   ======================================================================== */
+.chat-container {
+  max-width: 480px; margin: var(--space-6) auto;
+  background: var(--bg-card); border-radius: var(--radius-lg);
+  padding: var(--space-5); box-shadow: var(--shadow-md);
+  border: 1px solid rgba(44,36,32,0.08);
+}
+.chat-header {
+  font-family: var(--font-display); font-weight: 700;
+  font-size: var(--text-sm); color: var(--text-muted);
+  text-align: center; margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3); border-bottom: 1px solid rgba(44,36,32,0.08);
+}
+.chat-msg {
+  display: flex; gap: var(--space-3); margin-bottom: var(--space-4);
+  opacity: 0; transform: translateY(12px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+.chat-msg.visible { opacity: 1; transform: translateY(0); }
+.chat-msg.right { flex-direction: row-reverse; }
+.chat-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.85rem; font-weight: 700; flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+.chat-bubble {
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+  font-size: var(--text-sm); max-width: 300px; line-height: 1.5;
+}
+.chat-name {
+  font-size: var(--text-xs); font-weight: 600; margin-bottom: 2px;
+}
+.chat-msg.left .chat-bubble { background: #F0ECE6; border-bottom-left-radius: 4px; }
+.chat-msg.right .chat-bubble { background: var(--accent-bg); border-bottom-right-radius: 4px; }
+
+/* Chat actor colors */
+.actor-flask .chat-avatar { background: var(--teal-bg); color: var(--teal); }
+.actor-router .chat-avatar { background: var(--blue-bg); color: var(--blue); }
+.actor-postgres .chat-avatar { background: var(--purple-bg); color: var(--purple); }
+.actor-llm .chat-avatar { background: var(--gold-bg); color: var(--accent-dark); }
+.actor-intent .chat-avatar { background: var(--accent-bg); color: var(--accent); }
+.actor-browser .chat-avatar { background: #E3F2FD; color: #1565C0; }
+
+/* ========================================================================
+   MESSAGE FLOW ANIMATION
+   ======================================================================== */
+.flow-container {
+  margin: var(--space-8) 0; padding: var(--space-6);
+  background: var(--bg-card); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md); overflow: hidden;
+}
+.flow-title {
+  font-family: var(--font-display); font-weight: 700;
+  text-align: center; margin-bottom: var(--space-6);
+  font-size: var(--text-lg);
+}
+.flow-steps { position: relative; }
+.flow-step {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-4) 0;
+  opacity: 0; transform: translateX(-20px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.flow-step.visible { opacity: 1; transform: translateX(0); }
+.flow-step-num {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--accent); color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-weight: 700;
+  font-size: var(--text-sm); flex-shrink: 0;
+}
+.flow-step-content { flex: 1; }
+.flow-step-label {
+  font-family: var(--font-display); font-weight: 600;
+  font-size: var(--text-base); margin-bottom: 2px;
+}
+.flow-step-desc {
+  font-size: var(--text-sm); color: var(--text-secondary);
+}
+.flow-arrow {
+  margin-left: 17px; width: 2px; height: 24px;
+  background: var(--accent-light); opacity: 0;
+  transition: opacity 0.3s;
+}
+.flow-arrow.visible { opacity: 1; }
+
+/* ========================================================================
+   QUIZ
+   ======================================================================== */
+.quiz {
+  background: var(--bg-card); border-radius: var(--radius-lg);
+  padding: var(--space-6); margin: var(--space-8) 0;
+  box-shadow: var(--shadow-md); border: 1px solid rgba(44,36,32,0.06);
+}
+.quiz-title {
+  font-family: var(--font-display); font-weight: 700;
+  font-size: var(--text-xl); margin-bottom: var(--space-5);
+  color: var(--accent-dark);
+}
+.quiz-q {
+  font-weight: 500; margin-bottom: var(--space-4);
+  font-size: var(--text-base); line-height: 1.6;
+}
+.quiz-options { display: flex; flex-direction: column; gap: var(--space-3); }
+.quiz-opt {
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-sm);
+  border: 2px solid rgba(44,36,32,0.1); cursor: pointer;
+  font-size: var(--text-sm); transition: all 0.2s;
+  line-height: 1.5;
+}
+.quiz-opt:hover { border-color: var(--accent); background: var(--accent-bg); }
+.quiz-opt.correct {
+  border-color: var(--green); background: var(--bg-quiz-correct);
+  cursor: default;
+}
+.quiz-opt.wrong {
+  border-color: var(--red); background: var(--bg-quiz-wrong);
+  cursor: default; opacity: 0.7;
+}
+.quiz-opt.disabled { pointer-events: none; }
+.quiz-explanation {
+  margin-top: var(--space-4); padding: var(--space-4);
+  border-radius: var(--radius-sm); font-size: var(--text-sm);
+  line-height: 1.6; display: none;
+}
+.quiz-explanation.show { display: block; }
+.quiz-explanation.correct-exp { background: var(--bg-quiz-correct); }
+.quiz-explanation.wrong-exp { background: var(--bg-quiz-wrong); }
+.quiz-separator { height: 1px; background: rgba(44,36,32,0.08); margin: var(--space-6) 0; }
+
+/* ========================================================================
+   ARCHITECTURE DIAGRAM (SVG-like using CSS)
+   ======================================================================== */
+.arch-box {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-4); border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 500;
+  border: 2px solid;
+}
+.arch-box.flask { background: var(--teal-bg); border-color: var(--teal); color: var(--teal); }
+.arch-box.router { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
+.arch-box.postgres { background: var(--purple-bg); border-color: var(--purple); color: var(--purple); }
+.arch-box.llm { background: var(--gold-bg); border-color: var(--gold); color: var(--accent-dark); }
+.arch-box.intent { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-dark); }
+
+/* ========================================================================
+   FILE TREE
+   ======================================================================== */
+.file-tree {
+  background: var(--bg-code); color: var(--text-on-dark);
+  padding: var(--space-5); border-radius: var(--radius-md);
+  font-family: var(--font-mono); font-size: var(--text-sm);
+  margin: var(--space-6) 0; line-height: 1.8;
+}
+.file-tree .folder { color: #89B4FA; }
+.file-tree .file { color: #CDD6F4; }
+.file-tree .annotation {
+  color: #6C7086; font-family: var(--font-body); font-size: var(--text-xs);
+  margin-left: var(--space-3);
+}
+
+/* ========================================================================
+   STEP CARDS
+   ======================================================================== */
+.step-cards { display: flex; flex-direction: column; gap: var(--space-4); margin: var(--space-6) 0; }
+.step-card {
+  display: flex; align-items: flex-start; gap: var(--space-4);
+  background: var(--bg-card); border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-sm); border-left: 3px solid var(--accent);
+}
+.step-num {
+  font-family: var(--font-display); font-weight: 800;
+  font-size: var(--text-2xl); color: var(--accent); line-height: 1;
+  min-width: 32px;
+}
+.step-content {}
+.step-label { font-weight: 600; margin-bottom: 2px; }
+.step-desc { font-size: var(--text-sm); color: var(--text-secondary); }
+
+/* ========================================================================
+   SCROLL ANIMATIONS
+   ======================================================================== */
+.fade-in {
+  opacity: 0; transform: translateY(20px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.fade-in.visible { opacity: 1; transform: translateY(0); }
+
+/* ========================================================================
+   HERO SECTION
+   ======================================================================== */
+.hero {
+  min-height: 100dvh; min-height: 100vh;
+  display: flex; flex-direction: column; justify-content: center;
+  align-items: center; text-align: center;
+  padding: var(--space-12) var(--space-6);
+  background: linear-gradient(160deg, #2C2420 0%, #3E2F25 50%, #4A3628 100%);
+  color: white; position: relative; overflow: hidden;
+}
+.hero::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse at 30% 50%, rgba(224,90,51,0.15) 0%, transparent 60%);
+}
+.hero-badge {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--accent-light); letter-spacing: 2px;
+  margin-bottom: var(--space-5); position: relative;
+}
+.hero-title {
+  font-family: var(--font-display); font-weight: 800;
+  font-size: clamp(2.5rem, 6vw, 4rem); line-height: 1.1;
+  margin-bottom: var(--space-5); position: relative;
+}
+.hero-title span { color: var(--accent-light); }
+.hero-desc {
+  font-size: var(--text-lg); color: rgba(255,255,255,0.7);
+  max-width: 560px; margin-bottom: var(--space-8); position: relative;
+  line-height: 1.6;
+}
+.hero-start {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  background: var(--accent); color: white;
+  padding: var(--space-3) var(--space-6); border-radius: var(--radius-md);
+  font-family: var(--font-display); font-weight: 700;
+  font-size: var(--text-base); text-decoration: none;
+  transition: transform 0.2s, background 0.2s;
+  position: relative; cursor: pointer; border: none;
+}
+.hero-start:hover { transform: translateY(-2px); background: var(--accent-dark); }
+
+/* ========================================================================
+   RESPONSIVE
+   ======================================================================== */
+@media (max-width: 700px) {
+  .module { padding: var(--space-8) var(--space-4) var(--space-8); }
+  .module-title { font-size: var(--text-3xl); }
+  .translation-block { grid-template-columns: 1fr; }
+  .card-grid { grid-template-columns: 1fr; }
+  .nav-logo { font-size: var(--text-sm); }
+  .hero-title { font-size: var(--text-3xl); }
+  .chat-container { max-width: 100%; }
+}
+
+/* ========================================================================
+   PATTERN CARDS (wider)
+   ======================================================================== */
+.pattern-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-5); margin: var(--space-6) 0; }
+.pattern-card {
+  background: var(--bg-card); border-radius: var(--radius-md);
+  padding: var(--space-5); box-shadow: var(--shadow-sm);
+  border-top: 3px solid var(--accent);
+}
+.pattern-card-title {
+  font-family: var(--font-display); font-weight: 700;
+  margin-bottom: var(--space-2);
+}
+.pattern-card-body { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.6; }
+.pattern-card code {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  background: var(--bg-secondary); padding: 1px 5px; border-radius: 3px;
+}
+</style>
+</head>
+<body>
+
+<!-- ======================================================================
+     NAVIGATION
+     ====================================================================== -->
+<nav class="nav" role="navigation">
+  <div class="nav-logo">Atlas Course</div>
+  <div class="nav-links">
+    <a class="nav-link active" data-target="hero" onclick="scrollToModule('hero')">Intro</a>
+    <a class="nav-link" data-target="mod1" onclick="scrollToModule('mod1')">1 · Product</a>
+    <a class="nav-link" data-target="mod2" onclick="scrollToModule('mod2')">2 · Cast</a>
+    <a class="nav-link" data-target="mod3" onclick="scrollToModule('mod3')">3 · Pipeline</a>
+    <a class="nav-link" data-target="mod4" onclick="scrollToModule('mod4')">4 · Database</a>
+    <a class="nav-link" data-target="mod5" onclick="scrollToModule('mod5')">5 · Tricks</a>
+    <a class="nav-link" data-target="mod6" onclick="scrollToModule('mod6')">6 · Big Picture</a>
+  </div>
+</nav>
+<div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+
+<!-- ======================================================================
+     HERO
+     ====================================================================== -->
+<section class="hero" id="hero">
+  <div class="hero-badge">INTERACTIVE COURSE</div>
+  <h1 class="hero-title">How <span>Atlas</span> Works</h1>
+  <p class="hero-desc">
+    Atlas is a datacenter intelligence tool that reads cutsheet spreadsheets, loads them into Postgres,
+    and uses an LLM to answer natural-language questions about thousands of cable connections. This course
+    shows you how every piece fits together.
+  </p>
+  <button class="hero-start" onclick="scrollToModule('mod1')">Start the course ↓</button>
+</section>
+
+<!-- ======================================================================
+     MODULE 1 — WHAT ATLAS DOES
+     ====================================================================== -->
+<div class="module-wrapper" id="mod1">
+<section class="module">
+  <div class="module-badge">MODULE 01</div>
+  <h2 class="module-title">What Atlas Actually Does</h2>
+  <p class="module-subtitle">Before we look at any code, let's understand the product and trace what happens when you use it.</p>
+
+  <!-- Screen 1: The Problem -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Problem Atlas Solves</h3>
+    <p>When CoreWeave builds a new data hall, thousands of cables need to connect the right devices to the right ports with the right <span class="term" data-def="A small pluggable module that converts electrical signals to light signals (or vice versa) for fiber-optic cables. Different types handle different speeds and distances, like QSFP28-100G-DR1 for 100 Gbps over short distances.">optics</span>. The master plan lives in a giant <span class="term" data-def="A spreadsheet (usually Excel) that maps every single cable connection in a data hall: which device connects to which device, through which port, using which optic, and whether it's been installed yet.">cutsheet</span> spreadsheet, sometimes with 50,000+ rows.</p>
+    <p>Before Atlas, answering "how many QSFP28 optics do we still need to install?" meant manually filtering spreadsheet columns. Atlas turns that into a conversation.</p>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-icon">📋</div>
+        <div class="card-title">Upload a cutsheet</div>
+        <div class="card-desc">Drop your Excel file into the web UI. Atlas parses every row, normalizes the data, and loads it into a database.</div>
+      </div>
+      <div class="card teal">
+        <div class="card-icon">💬</div>
+        <div class="card-title">Ask a question</div>
+        <div class="card-desc">"How many SN5600 devices are in DH2?" Atlas classifies the question, pulls the right data, and hands it to an AI to answer in plain English.</div>
+      </div>
+      <div class="card blue">
+        <div class="card-icon">🔍</div>
+        <div class="card-title">Analyze a rack</div>
+        <div class="card-desc">Enter a room and rack number. Atlas shows every device, cable, and optic in that rack, with downloadable labels.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 2: Trace the journey -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">Trace the Journey: "How many optics do I need?"</h3>
+    <p>You type that question into Atlas. Here's what happens behind the scenes in about 2 seconds:</p>
+
+    <div class="flow-container">
+      <div class="flow-title">Question → Answer Pipeline</div>
+      <div class="flow-steps" id="flow1">
+        <div class="flow-step"><div class="flow-step-num">1</div><div class="flow-step-content"><div class="flow-step-label">Your browser sends the question</div><div class="flow-step-desc">The <span class="term" data-def="The part of the app that runs in your web browser. It sends your questions to the server and displays the answers. In Atlas, it's a single HTML page with JavaScript.">frontend</span> POSTs your question + auth token to <code>/api/ask</code></div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num">2</div><div class="flow-step-content"><div class="flow-step-label">Flask receives and validates</div><div class="flow-step-desc">The <span class="term" data-def="A lightweight Python web framework. It handles incoming web requests (like your question) and sends back responses (like the answer). Think of it as the receptionist of the app.">Flask</span> server checks your auth token, finds your site context, and decides whether to use the database path</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num">3</div><div class="flow-step-content"><div class="flow-step-label">Intent classification</div><div class="flow-step-desc">The query router reads your question and classifies it as "optic_count" using keyword matching. No AI needed for this step.</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num">4</div><div class="flow-step-content"><div class="flow-step-label">SQL template executes</div><div class="flow-step-desc">A pre-written <span class="term" data-def="Structured Query Language — the language used to talk to databases. Instead of scrolling through spreadsheet rows, SQL lets you ask precise questions like 'count all rows where optic = QSFP28-100G-DR1'. Atlas uses pre-built SQL templates, never letting the AI write its own SQL.">SQL</span> query runs against <span class="term" data-def="A powerful open-source database system. Atlas stores all cutsheet data in Postgres tables so questions can be answered in milliseconds instead of scanning a 50,000-row spreadsheet.">Postgres</span>, counting optics by type and status</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num">5</div><div class="flow-step-content"><div class="flow-step-label">Results formatted for the AI</div><div class="flow-step-desc">The raw database rows get compressed into a text summary that the LLM can understand, with token estimates</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num">6</div><div class="flow-step-content"><div class="flow-step-label">LLM writes the answer</div><div class="flow-step-desc">Claude (or GPT) receives the data context and writes a natural-language answer. It can only see what the SQL returned, keeping it grounded in real data.</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num">7</div><div class="flow-step-content"><div class="flow-step-label">Answer arrives in your browser</div><div class="flow-step-desc">The frontend displays the answer plus a badge showing whether it came from Postgres, the Rack Analyzer, or in-memory context</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 3: Key Insight callout -->
+  <div class="screen fade-in">
+    <div class="callout teal">
+      <div class="callout-title">💡 The Big Insight: Grounded AI</div>
+      <div class="callout-body">Atlas never lets the AI make up SQL or guess at data. Every question gets classified into one of ~27 known types, and each type has a hand-written SQL template. The AI only sees the actual query results. This "grounded" approach means the AI can't hallucinate data that doesn't exist in your cutsheet. When you're building AI tools, this is a pattern worth stealing: let the AI write prose, but never let it write the queries.</div>
+    </div>
+  </div>
+
+  <!-- Screen 4: Quiz -->
+  <div class="screen fade-in">
+    <div class="quiz" id="quiz1">
+      <div class="quiz-title">Check Your Understanding</div>
+
+      <div class="quiz-q">A user asks Atlas "show me LLDP failures in GRID-AGG A." Atlas misclassifies the question and shows optic counts instead. Where in the pipeline did the problem most likely occur?</div>
+      <div class="quiz-options" data-quiz="q1">
+        <div class="quiz-opt" data-correct="false" data-explain="The Flask layer just receives the request and forwards it. It doesn't decide what kind of question it is.">In the Flask web server, which received the request wrong</div>
+        <div class="quiz-opt" data-correct="true" data-explain="The intent classifier (query_intent.py) decides which SQL template to use. If it misclassifies the question, the wrong template runs, and the user gets the wrong kind of data. This is the step where 'optic_count' vs 'lldp_failures' gets decided.">In the intent classification step, which picked the wrong question type</div>
+        <div class="quiz-opt" data-correct="false" data-explain="The SQL templates are pre-written and correct for their question type. If the right template runs, it returns the right data. The problem is upstream, in classification.">In the SQL template, which returned bad data</div>
+        <div class="quiz-opt" data-correct="false" data-explain="The LLM only formats results it receives. If it gets optic data, it'll talk about optics. The root cause is earlier in the pipeline.">In the LLM, which hallucinated the wrong answer</div>
+      </div>
+      <div class="quiz-explanation" id="q1-exp"></div>
+    </div>
+  </div>
+
+</section>
+</div>
+
+<!-- ======================================================================
+     MODULE 2 — MEET THE CAST
+     ====================================================================== -->
+<div class="module-wrapper" id="mod2">
+<section class="module">
+  <div class="module-badge">MODULE 02</div>
+  <h2 class="module-title">Meet the Cast of Characters</h2>
+  <p class="module-subtitle">Atlas is built from about a dozen Python files. Each one has a specific job. Think of them like specialists on a team.</p>
+
+  <!-- Screen 1: The File Map -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Project Layout</h3>
+    <p>If Atlas were a hospital, each file would be a different department. Here's what's inside the <code>Optic_Count/</code> folder:</p>
+
+    <div class="file-tree">
+<span class="folder">Optic_Count/</span>
+  <span class="file">atlas_web_app.py</span> <span class="annotation">← The front door. Flask web server with all API endpoints.</span>
+  <span class="file">demo_auth_ai.py</span> <span class="annotation">← Security guard + AI caller. Handles login tokens and LLM calls.</span>
+  <span class="file">query_intent.py</span> <span class="annotation">← The triage nurse. Classifies questions into types.</span>
+  <span class="file">query_extractors.py</span> <span class="annotation">← The detective. Pulls device names, locations, models from questions.</span>
+  <span class="file">query_lexicon.py</span> <span class="annotation">← The dictionary. Keyword sets for classification.</span>
+  <span class="file">atlas_query_router.py</span> <span class="annotation">← The specialist. Picks and runs the right SQL template.</span>
+  <span class="file">atlas_postgres_context.py</span> <span class="annotation">← The translator. Bridges query results → LLM-ready context.</span>
+  <span class="file">atlas_data_loader.py</span> <span class="annotation">← The intake clerk. Loads Excel data into Postgres.</span>
+  <span class="file">cutsheet_profiles.py</span> <span class="annotation">← The interpreter. Normalizes column names across different cutsheet formats.</span>
+  <span class="file">cutsheet_normalizer.py</span> <span class="annotation">← The organizer. Builds structured data from raw spreadsheet rows.</span>
+  <span class="file">build_sheet_processor.py</span> <span class="annotation">← The rack expert. Per-rack analysis and label generation.</span>
+  <span class="file">atlas_schema.sql</span> <span class="annotation">← The blueprint. Database table definitions.</span>
+  <span class="file">docker-compose.yml</span> <span class="annotation">← The construction crew. Spins up Postgres + Flask in containers.</span>
+    </div>
+  </div>
+
+  <!-- Screen 2: The Big 4 -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Four Main Actors</h3>
+    <p>You don't need to memorize every file. Most questions flow through these four:</p>
+
+    <div class="card-grid">
+      <div class="card teal">
+        <div class="card-icon">🚪</div>
+        <div class="card-title">atlas_web_app.py</div>
+        <div class="card-desc">The Flask web server. Every request enters here. It handles auth, file uploads, rack analysis, and the Q&A endpoint. Think of it as the reception desk that decides which department to route you to.</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🧠</div>
+        <div class="card-title">query_intent.py</div>
+        <div class="card-desc">The brain that reads your question and decides its type. It runs 14 "domain routers" in priority order. Each router checks for specific keyword patterns. First match wins.</div>
+      </div>
+      <div class="card blue">
+        <div class="card-icon">🗄️</div>
+        <div class="card-title">atlas_query_router.py</div>
+        <div class="card-desc">Owns all 27+ SQL templates. Once the question type is known, this file picks the matching template, fills in parameters, runs it against Postgres, and formats the results as text.</div>
+      </div>
+      <div class="card purple">
+        <div class="card-icon">🤖</div>
+        <div class="card-title">demo_auth_ai.py</div>
+        <div class="card-desc">Handles two unrelated things: HMAC token authentication (login), and calling the LLM (Claude or GPT) with the data context. It also sanitizes inputs against prompt injection.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 3: Group Chat Animation -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">How They Talk to Each Other</h3>
+    <p>Watch these four actors handle a real question:</p>
+
+    <div class="chat-container" id="chat1">
+      <div class="chat-header">🔬 Atlas Internal Chat — "How many SN5600s?"</div>
+
+      <div class="chat-msg left actor-browser">
+        <div class="chat-avatar">🌐</div>
+        <div><div class="chat-name" style="color:var(--blue)">Browser</div><div class="chat-bubble">POST /api/ask {"question": "how many SN5600 devices do we have?"}</div></div>
+      </div>
+
+      <div class="chat-msg left actor-flask">
+        <div class="chat-avatar">🚪</div>
+        <div><div class="chat-name" style="color:var(--teal)">atlas_web_app.py</div><div class="chat-bubble">Token checks out. User has site ELD loaded. Let me grab the Postgres context...</div></div>
+      </div>
+
+      <div class="chat-msg right actor-intent">
+        <div class="chat-avatar">🧠</div>
+        <div><div class="chat-name" style="color:var(--accent)">query_intent.py</div><div class="chat-bubble">I see "SN5600" → that's a model token. Plus "how many" → count words. Classifying as <strong>model_search</strong>, confidence: high.</div></div>
+      </div>
+
+      <div class="chat-msg left actor-router">
+        <div class="chat-avatar">🗄️</div>
+        <div><div class="chat-name" style="color:var(--blue)">atlas_query_router.py</div><div class="chat-bubble">model_search template selected. Running SQL with pattern '%SN5600%' against site_id=1... Got 12 rows back in 0.04s.</div></div>
+      </div>
+
+      <div class="chat-msg right actor-postgres">
+        <div class="chat-avatar">🐘</div>
+        <div><div class="chat-name" style="color:var(--purple)">Postgres</div><div class="chat-bubble">Here are your 12 unique devices matching SN5600, with connection counts per device.</div></div>
+      </div>
+
+      <div class="chat-msg left actor-llm">
+        <div class="chat-avatar">🤖</div>
+        <div><div class="chat-name" style="color:var(--accent-dark)">Claude (LLM)</div><div class="chat-bubble">Based on the cutsheet data, you have 12 SN5600 switches deployed across DH201 and DH202, with a total of 384 connections...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 4: Quiz -->
+  <div class="screen fade-in">
+    <div class="quiz" id="quiz2">
+      <div class="quiz-title">Check Your Understanding</div>
+
+      <div class="quiz-q">You want to add a new feature: Atlas should answer questions about power distribution units (PDUs). Which file would you need to modify first?</div>
+      <div class="quiz-options" data-quiz="q2">
+        <div class="quiz-opt" data-correct="false" data-explain="atlas_web_app.py handles HTTP requests but doesn't decide how to answer specific question types. You'd only change it if you needed a new API endpoint.">atlas_web_app.py — it handles all incoming requests</div>
+        <div class="quiz-opt" data-correct="true" data-explain="query_intent.py is where question classification happens. You'd add a new domain router (like route_pdu_intent) that recognizes PDU-related keywords and maps them to either an existing or new question type. Then you'd add the SQL template in atlas_query_router.py.">query_intent.py — it needs to recognize PDU-related questions</div>
+        <div class="quiz-opt" data-correct="false" data-explain="demo_auth_ai.py handles authentication and calling the LLM. It doesn't know anything about question types. You wouldn't touch it for this.">demo_auth_ai.py — it controls what the AI knows about</div>
+        <div class="quiz-opt" data-correct="false" data-explain="docker-compose.yml just defines the containers. Adding a new question type is a code change, not an infrastructure change.">docker-compose.yml — it controls the database setup</div>
+      </div>
+      <div class="quiz-explanation" id="q2-exp"></div>
+    </div>
+  </div>
+
+</section>
+</div>
+
+<!-- ======================================================================
+     MODULE 3 — THE QUERY PIPELINE
+     ====================================================================== -->
+<div class="module-wrapper" id="mod3">
+<section class="module">
+  <div class="module-badge">MODULE 03</div>
+  <h2 class="module-title">The Query Pipeline</h2>
+  <p class="module-subtitle">This is the core of Atlas — how a plain-English question becomes a precise database query. Think of it like a mail sorting facility.</p>
+
+  <!-- Screen 1: Classification -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">Step 1: Intent Classification</h3>
+    <p>When your question arrives, <code>query_intent.py</code> runs 14 <span class="term" data-def="A function that checks if a question belongs to a specific category. Each domain router 'owns' one type of question (optics, devices, sections, etc.) and checks for relevant keywords. They run in priority order — first match wins.">domain routers</span> in sequence. Each one checks if the question belongs to its territory. First match wins.</p>
+
+    <div class="translation-block">
+      <div>
+        <div class="translation-header translation-header-code">query_intent.py · route_optic_intent()</div>
+        <div class="translation-code"><span class="code-line"><span class="kw">def</span> <span class="fn">route_optic_intent</span>(ctx: QuestionContext):</span>
+<span class="code-line">    optic_hits = <span class="fn">_hits</span>(ctx.token_set, OPTIC_WORDS)</span>
+<span class="code-line">    count_hits = <span class="fn">_hits</span>(ctx.token_set, COUNT_WORDS)</span>
+<span class="code-line"> </span>
+<span class="code-line">    <span class="kw">if</span> ctx.has_optic_token <span class="kw">and</span> count_hits:</span>
+<span class="code-line">        <span class="kw">return</span> IntentResult(</span>
+<span class="code-line">            <span class="st">"optic_count"</span>, <span class="st">"high"</span>,</span>
+<span class="code-line">            <span class="st">"optic token + count words"</span>,</span>
+<span class="code-line">            <span class="st">"optic"</span>,</span>
+<span class="code-line">            [ctx.extracted_optic] + <span class="fn">sorted</span>(count_hits))</span></div>
+      </div>
+      <div>
+        <div class="translation-header translation-header-eng">PLAIN ENGLISH</div>
+        <div class="translation-english"><span class="eng-line">Define the optic-domain router function</span>
+<span class="eng-line">Check if the question has optic-related words (like "optic", "transceiver")</span>
+<span class="eng-line">Check if it has counting words (like "how many", "count", "total")</span>
+<span class="eng-line"> </span>
+<span class="eng-line">If we found a specific optic name (like QSFP28) AND count words:</span>
+<span class="eng-line">Return a classification result that says:</span>
+<span class="eng-line">  Question type is "optic_count", confidence is "high"</span>
+<span class="eng-line">  The reason: we found an optic name + counting language</span>
+<span class="eng-line">  Domain: "optic"</span>
+<span class="eng-line">  Signals: the optic name and the count words we matched</span></div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-title">💡 Why Keywords Beat AI For Classification</div>
+      <div class="callout-body">Atlas uses keyword matching instead of an LLM for classification. Why? Speed (keyword matching takes microseconds, LLM calls take seconds), cost (no API call needed), and determinism (the same question always classifies the same way). The <span class="term" data-def="A Python frozenset containing all words that relate to a specific domain. For example, OPTIC_WORDS might contain 'optic', 'transceiver', 'sfp', 'qsfp', etc. Using frozensets makes lookups extremely fast because Python can check membership in O(1) time.">keyword dictionaries</span> in query_lexicon.py are the single source of truth.</div>
+    </div>
+  </div>
+
+  <!-- Screen 2: Router chain priority -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Router Chain</h3>
+    <p>The 14 routers run in a deliberate priority order. This prevents ambiguity when a question could match multiple types.</p>
+
+    <div class="step-cards">
+      <div class="step-card"><div class="step-num">1</div><div class="step-content"><div class="step-label">Upload diff/list</div><div class="step-desc">Highest priority. "Compare upload 5 vs upload 6" should always go to diff, even if it mentions devices.</div></div></div>
+      <div class="step-card"><div class="step-num">2</div><div class="step-content"><div class="step-label">Cross-site comparisons</div><div class="step-desc">"Optics across all sites" hits cross-site before single-site optic router.</div></div></div>
+      <div class="step-card"><div class="step-num">3</div><div class="step-content"><div class="step-label">Burndown / LLDP</div><div class="step-desc"><span class="term" data-def="Link Layer Discovery Protocol — a networking protocol that lets connected devices identify each other. When a cable is installed and both ends are talking correctly, LLDP reports 'Passed'. If something's wrong (wrong port, bad cable), it reports 'Failed'. This is the gold standard for verifying connections.">LLDP</span> failures and <span class="term" data-def="A spreadsheet that tracks the progress of cable installation and verification. It shows which links are up, which are down, and which neighbors are mismatched. Think of it as the 'are we done yet?' checklist.">burndown</span> queries get priority since they're operationally urgent.</div></div></div>
+      <div class="step-card"><div class="step-num">4</div><div class="step-content"><div class="step-label">Roles → Locations → Optics → Status → Sections</div><div class="step-desc">Each domain router checks its keywords. A question about "FDP spine optics" hits role first, but the role router defers to optic router when it sees optic words.</div></div></div>
+      <div class="step-card"><div class="step-num">5</div><div class="step-content"><div class="step-label">Trends → Data halls → Sites → Devices → IP</div><div class="step-desc">Lower priority catch-alls. If nothing above matched, these broader routers try.</div></div></div>
+      <div class="step-card"><div class="step-num">6</div><div class="step-content"><div class="step-label">General (fallback)</div><div class="step-desc">If no router matched, it falls back to "general" with confidence "low". The LLM gets a composite overview.</div></div></div>
+    </div>
+  </div>
+
+  <!-- Screen 3: SQL templates -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">Step 2: The SQL Templates</h3>
+    <p>Once the question type is known, <code>atlas_query_router.py</code> picks the matching <span class="term" data-def="A pre-written SQL query with placeholder slots (like %(site_id)s) that get filled in with actual values at runtime. This is like a mad-libs for database queries — the structure is fixed, only the specifics change. This prevents SQL injection attacks because user input never becomes part of the query structure.">SQL template</span>. There are 27+ templates covering every question type. Here's what the optic_count one looks like:</p>
+
+    <div class="translation-block">
+      <div>
+        <div class="translation-header translation-header-code">atlas_query_router.py · optic_count template</div>
+        <div class="translation-code"><span class="code-line"><span class="kw">SELECT</span> optic_type,</span>
+<span class="code-line">  a_count + z_count <span class="kw">AS</span> cable_count,</span>
+<span class="code-line">  in_service, failed, pending</span>
+<span class="code-line"><span class="kw">FROM</span> (</span>
+<span class="code-line">  <span class="kw">SELECT</span> optic_type,</span>
+<span class="code-line">    <span class="fn">SUM</span>(<span class="kw">CASE WHEN</span> side=<span class="st">'A'</span> <span class="kw">THEN</span> <span class="nb">1</span> <span class="kw">ELSE</span> <span class="nb">0</span> <span class="kw">END</span>) <span class="kw">AS</span> a_count,</span>
+<span class="code-line">    <span class="fn">SUM</span>(<span class="kw">CASE WHEN</span> side=<span class="st">'Z'</span> <span class="kw">THEN</span> <span class="nb">1</span> <span class="kw">ELSE</span> <span class="nb">0</span> <span class="kw">END</span>) <span class="kw">AS</span> z_count,</span>
+<span class="code-line">    <span class="fn">COUNT</span>(*) <span class="kw">FILTER</span> (<span class="kw">WHERE</span> status_normalized</span>
+<span class="code-line">      <span class="kw">IN</span> (<span class="st">'lldp_passed'</span>,<span class="st">'human_verified'</span>,<span class="st">'complete'</span>))</span>
+<span class="code-line">      <span class="kw">AS</span> in_service</span>
+<span class="code-line">  <span class="kw">FROM</span> ( <span class="cm">-- UNION ALL of A-side and Z-side</span> )</span>
+<span class="code-line">  <span class="kw">GROUP BY</span> optic_type</span>
+<span class="code-line">) sub <span class="kw">ORDER BY</span> cable_count <span class="kw">DESC</span></span></div>
+      </div>
+      <div>
+        <div class="translation-header translation-header-eng">PLAIN ENGLISH</div>
+        <div class="translation-english"><span class="eng-line">Give me the optic type name,</span>
+<span class="eng-line">and the total count (A-side + Z-side),</span>
+<span class="eng-line">plus how many are in-service, failed, or pending.</span>
+<span class="eng-line">To get this, first build a subquery that:</span>
+<span class="eng-line">  Looks at every optic in the spreadsheet,</span>
+<span class="eng-line">  Counts how many appear on the A-side of cables,</span>
+<span class="eng-line">  Counts how many appear on the Z-side,</span>
+<span class="eng-line">  Separately counts which ones have a "working" status</span>
+<span class="eng-line">  (passed verification, human-checked, or cable-run complete)</span>
+<span class="eng-line">  as "in_service".</span>
+<span class="eng-line">  It checks BOTH sides independently (using UNION ALL)</span>
+<span class="eng-line">  then groups by optic type</span>
+<span class="eng-line">and sorts by which optic has the most cables.</span></div>
+      </div>
+    </div>
+
+    <div class="callout blue">
+      <div class="callout-title">💡 A-Side and Z-Side: The Cable's Two Ends</div>
+      <div class="callout-body">Every cable connection has an A-side (origin) and a Z-side (destination). Each side can have a different optic. If a cable uses QSFP28 on the A-side and QSFP-DD on the Z-side, Atlas counts each optic separately. That's what the <code>UNION ALL</code> does: it looks at A-side optics and Z-side optics independently, then combines them. This prevents under-counting when the two ends use different optic types.</div>
+    </div>
+  </div>
+
+  <!-- Screen 4: Quiz -->
+  <div class="screen fade-in">
+    <div class="quiz" id="quiz3">
+      <div class="quiz-title">Check Your Understanding</div>
+
+      <div class="quiz-q">A user asks "is the LLDP pass rate improving over time?" Two routers match: the LLDP router (route_lldp_intent) and the trend router (route_trend_intent). Which one wins, and why?</div>
+      <div class="quiz-options" data-quiz="q3">
+        <div class="quiz-opt" data-correct="false" data-explain="The LLDP router runs first in the chain (position 4), but it's designed to defer to the trend router when it detects trend words like 'improving' and 'over time'. It does this with an explicit check: if TREND_WORDS are present, return None and let the trend router handle it.">The LLDP router wins because it runs earlier in the chain</div>
+        <div class="quiz-opt" data-correct="true" data-explain="The LLDP router explicitly checks for trend words and defers by returning None when it finds them. This lets the trend router (position 10) handle it. The question is about LLDP data, but it's asking for a trend view — and trend_status gives historical data across uploads, which is what the user actually wants.">The trend router wins because the LLDP router defers when it sees trend words</div>
+        <div class="quiz-opt" data-correct="false" data-explain="Neither router is 'smarter.' The priority system is explicit: each router can choose to defer by returning None. The LLDP router has specific code that checks for trend signals and backs off.">Whichever router is smarter about the question wins</div>
+        <div class="quiz-opt" data-correct="false" data-explain="There's no voting. Routers run in sequence: first non-None result wins. The LLDP router checks for trend signals and explicitly defers.">Both match and they average their answers</div>
+      </div>
+      <div class="quiz-explanation" id="q3-exp"></div>
+    </div>
+  </div>
+
+</section>
+</div>
+
+<!-- ======================================================================
+     MODULE 4 — THE DATABASE
+     ====================================================================== -->
+<div class="module-wrapper" id="mod4">
+<section class="module">
+  <div class="module-badge">MODULE 04</div>
+  <h2 class="module-title">The Database Layer</h2>
+  <p class="module-subtitle">Atlas's database is like a warehouse with labeled shelves. Knowing the shelf layout helps you understand how questions get answered fast.</p>
+
+  <!-- Screen 1: Core tables -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Core Tables</h3>
+    <p>Atlas stores cutsheet data across a handful of related tables. Think of it like a filing system: sites contain uploads, and uploads contain connections.</p>
+
+    <div class="card-grid">
+      <div class="card purple">
+        <div class="card-icon">🏢</div>
+        <div class="card-title">sites</div>
+        <div class="card-desc">One row per datacenter location. Stores the site code (ELD, QCY, DTN) and name. Everything else references back to this.</div>
+      </div>
+      <div class="card blue">
+        <div class="card-icon">📤</div>
+        <div class="card-title">cutsheet_uploads</div>
+        <div class="card-desc">One row per file upload. Tracks who uploaded it, when, and whether it's the "active" version. Has a soft-delete flag so old uploads stick around for trend analysis.</div>
+      </div>
+      <div class="card teal">
+        <div class="card-icon">🔗</div>
+        <div class="card-title">cutsheet_connections</div>
+        <div class="card-desc">The big one. One row per cable connection. Stores A-side device, port, optic, location AND Z-side equivalents, plus status and section. This is where 50,000 rows live.</div>
+      </div>
+      <div class="card gold">
+        <div class="card-icon">🖥️</div>
+        <div class="card-title">host_inventory</div>
+        <div class="card-desc">Device metadata from the SITE-HOSTS sheet: hostname, model, rack location, role (spine, leaf, FDP, CDU). Used for role-based queries.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 2: Schema code -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Connection Table Up Close</h3>
+    <p>This is the single most important table in Atlas. Every Q&A query touches it.</p>
+
+    <div class="translation-block">
+      <div>
+        <div class="translation-header translation-header-code">atlas_schema.sql · cutsheet_connections</div>
+        <div class="translation-code"><span class="code-line"><span class="kw">CREATE TABLE</span> cutsheet_connections (</span>
+<span class="code-line">  id              <span class="ty">SERIAL PRIMARY KEY</span>,</span>
+<span class="code-line">  upload_id       <span class="ty">INTEGER</span> <span class="kw">REFERENCES</span> cutsheet_uploads(id),</span>
+<span class="code-line">  site_id         <span class="ty">INTEGER</span> <span class="kw">REFERENCES</span> sites(id),</span>
+<span class="code-line">  section         <span class="ty">TEXT</span>,</span>
+<span class="code-line">  a_device        <span class="ty">TEXT</span>,  a_port  <span class="ty">TEXT</span>,</span>
+<span class="code-line">  a_optic         <span class="ty">TEXT</span>,  a_model <span class="ty">TEXT</span>,</span>
+<span class="code-line">  a_loc_cab_ru    <span class="ty">TEXT</span>,</span>
+<span class="code-line">  z_device        <span class="ty">TEXT</span>,  z_port  <span class="ty">TEXT</span>,</span>
+<span class="code-line">  z_optic         <span class="ty">TEXT</span>,  z_model <span class="ty">TEXT</span>,</span>
+<span class="code-line">  z_loc_cab_ru    <span class="ty">TEXT</span>,</span>
+<span class="code-line">  cable_id        <span class="ty">TEXT</span>,</span>
+<span class="code-line">  status          <span class="ty">TEXT</span>,</span>
+<span class="code-line">  status_normalized <span class="ty">TEXT</span></span>
+<span class="code-line">);</span></div>
+      </div>
+      <div>
+        <div class="translation-header translation-header-eng">PLAIN ENGLISH</div>
+        <div class="translation-english"><span class="eng-line">Create a table called cutsheet_connections with:</span>
+<span class="eng-line">An auto-incrementing ID for each row</span>
+<span class="eng-line">Which upload this row came from (links to uploads table)</span>
+<span class="eng-line">Which site this row belongs to (links to sites table)</span>
+<span class="eng-line">The topology section name (like "GRID-AGG A")</span>
+<span class="eng-line">A-side: device hostname, port name,</span>
+<span class="eng-line">  optic type, device model,</span>
+<span class="eng-line">  physical location (data hall : cabinet : rack unit)</span>
+<span class="eng-line">Z-side: same fields for the other end of the cable</span>
+<span class="eng-line"> </span>
+<span class="eng-line"> </span>
+<span class="eng-line">The cable's ID from the cutsheet</span>
+<span class="eng-line">Raw status text from the spreadsheet</span>
+<span class="eng-line">Cleaned-up status for fast filtering (no fuzzy matching needed)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 3: Upload scoping -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">Upload Scoping: Time-Travel for Cutsheets</h3>
+    <p>Every SQL template includes this clause:</p>
+    <div style="background:var(--bg-code);padding:var(--space-4);border-radius:var(--radius-sm);margin:var(--space-4) 0;font-family:var(--font-mono);font-size:var(--text-sm);color:var(--text-on-dark);white-space:pre-wrap;"><span class="kw">AND</span> (%(upload_id)s::<span class="ty">bigint</span> <span class="kw">IS NULL OR</span> upload_id = %(upload_id)s::<span class="ty">bigint</span>)</div>
+    <p>This is clever: when <code>upload_id</code> is NULL, the condition is always true (you see all data for the site). When it's a specific number, you only see data from that upload. This lets Atlas answer "how did things look last week?" by querying an older upload, and "what changed?" by comparing two uploads side-by-side.</p>
+
+    <div class="callout">
+      <div class="callout-title">💡 Versioned Snapshots Without Complexity</div>
+      <div class="callout-body">This single SQL pattern gives Atlas time-travel capability without needing a separate versioning system. Each upload is a frozen snapshot of the cutsheet at that moment. The trend_status and upload_diff templates exploit this to show progress over time. When you're building your own data tools, this "scope by version ID" pattern is much simpler than trying to track individual row changes.</div>
+    </div>
+  </div>
+
+  <!-- Screen 4: Quiz -->
+  <div class="screen fade-in">
+    <div class="quiz" id="quiz4">
+      <div class="quiz-title">Check Your Understanding</div>
+
+      <div class="quiz-q">A site has two uploads: #5 (from Monday, 4,200 rows) and #8 (from Thursday, 4,350 rows). A user asks "how many connections are there?" What does Atlas return?</div>
+      <div class="quiz-options" data-quiz="q4">
+        <div class="quiz-opt" data-correct="false" data-explain="Atlas doesn't combine uploads. That would double-count connections that exist in both. Each upload is a complete snapshot.">8,550 — the sum of both uploads</div>
+        <div class="quiz-opt" data-correct="true" data-explain="Atlas scopes to the latest active upload by default. In build_postgres_context(), if no upload_id is specified, it queries for the most recent active upload (upload #8) and uses that as the scope. This prevents double-counting.">4,350 — only the latest active upload</div>
+        <div class="quiz-opt" data-correct="false" data-explain="Atlas always scopes to a specific upload to prevent double-counting. It picks the latest active one automatically.">It depends on which upload the user has selected</div>
+        <div class="quiz-opt" data-correct="false" data-explain="Atlas wouldn't error here. It has logic to auto-select the latest active upload when none is explicitly specified.">An error, because no upload_id was specified</div>
+      </div>
+      <div class="quiz-explanation" id="q4-exp"></div>
+    </div>
+  </div>
+
+</section>
+</div>
+
+<!-- ======================================================================
+     MODULE 5 — THE CLEVER TRICKS
+     ====================================================================== -->
+<div class="module-wrapper" id="mod5">
+<section class="module">
+  <div class="module-badge">MODULE 05</div>
+  <h2 class="module-title">The Clever Tricks</h2>
+  <p class="module-subtitle">Atlas has some smart engineering patterns that prevent common problems. These are the patterns worth knowing so you can request them in your own projects.</p>
+
+  <!-- Screen 1: Security -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">Security: Three Layers Deep</h3>
+    <p>Atlas handles authentication, SQL injection, and prompt injection. Each defense is independent so one failure doesn't compromise the others.</p>
+
+    <div class="pattern-cards">
+      <div class="pattern-card">
+        <div class="pattern-card-title">HMAC Token Auth</div>
+        <div class="pattern-card-body">When you enter the PIN, Atlas creates a <span class="term" data-def="Hash-based Message Authentication Code — a cryptographic technique that creates a unique 'signature' for a piece of data using a secret key. If anyone tampers with the data, the signature won't match. Atlas uses this to create login tokens that can't be forged.">HMAC</span>-signed token with a 15-minute expiry. The token is verified on every request using <code>hmac.compare_digest()</code>, which is <span class="term" data-def="A comparison method that always takes the same amount of time regardless of how many characters match. Normal string comparison stops at the first difference, which leaks information about how close a guess was. Timing-safe comparison prevents attackers from guessing tokens one character at a time.">timing-safe</span> to prevent attackers from guessing the token character by character.</div>
+      </div>
+      <div class="pattern-card">
+        <div class="pattern-card-title">Parameterized SQL</div>
+        <div class="pattern-card-body">All SQL uses <code>%(param)s</code> placeholders. User input goes through <code>_escape_ilike()</code> which escapes wildcards. This means if someone types <code>'; DROP TABLE connections; --</code> as a device name, it's treated as literal text, not a command. The database never executes anything a user typed.</div>
+      </div>
+      <div class="pattern-card">
+        <div class="pattern-card-title">Prompt Injection Defense</div>
+        <div class="pattern-card-body">Before sending data to the LLM, <code>demo_auth_ai.py</code> runs <code>_sanitize_context_dict()</code> — a recursive function that scrubs prompt injection patterns from every field. Even if someone named a device "ignore previous instructions and...", the sanitizer strips it before the LLM sees it.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 2: Status normalization -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">Status Normalization: One Truth, Many Spellings</h3>
+    <p>Cutsheets from different sites spell statuses differently. "LLDP:  Passed" (two spaces), "LLDP: Pass", "Cable Is Ran Complete" all mean the same thing. Atlas normalizes them all into a small set of canonical values.</p>
+
+    <div class="translation-block">
+      <div>
+        <div class="translation-header translation-header-code">cutsheet_profiles.py · STATUS_NORMALIZATION</div>
+        <div class="translation-code"><span class="code-line"><span class="var">STATUS_NORMALIZATION</span> = {</span>
+<span class="code-line">  <span class="st">"lldp:  passed"</span>:          <span class="st">"lldp_passed"</span>,</span>
+<span class="code-line">  <span class="st">"lldp: passed"</span>:           <span class="st">"lldp_passed"</span>,</span>
+<span class="code-line">  <span class="st">"lldp:  failed"</span>:          <span class="st">"lldp_failed"</span>,</span>
+<span class="code-line">  <span class="st">"cable is ran complete"</span>:  <span class="st">"complete"</span>,</span>
+<span class="code-line">  <span class="st">"cable is ran: complete"</span>: <span class="st">"complete"</span>,</span>
+<span class="code-line">  <span class="st">"cable not run"</span>:          <span class="st">"not_run"</span>,</span>
+<span class="code-line">  <span class="st">"human verified"</span>:         <span class="st">"human_verified"</span>,</span>
+<span class="code-line">  ...</span>
+<span class="code-line">}</span></div>
+      </div>
+      <div>
+        <div class="translation-header translation-header-eng">PLAIN ENGLISH</div>
+        <div class="translation-english"><span class="eng-line">A dictionary that maps messy status strings:</span>
+<span class="eng-line">"LLDP:  Passed" (with double space) → "lldp_passed"</span>
+<span class="eng-line">"LLDP: Passed" (single space) → same canonical value</span>
+<span class="eng-line">"LLDP:  Failed" → "lldp_failed"</span>
+<span class="eng-line">"Cable Is Ran Complete" → "complete"</span>
+<span class="eng-line">"Cable Is Ran: Complete" (with colon) → same thing</span>
+<span class="eng-line">"Cable Not Run" → "not_run"</span>
+<span class="eng-line">"Human Verified" → "human_verified"</span>
+<span class="eng-line">...and so on for every known variant.</span>
+<span class="eng-line">SQL queries use the normalized version for fast, exact matches.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 3: Three-tier fallback -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Three-Tier Fallback Chain</h3>
+    <p>Atlas has three ways to answer a question, and it tries them in priority order. If the best source fails, it falls back to the next one. Think of it like trying to check your bank balance: first the app, then the website, then calling the phone number.</p>
+
+    <div class="flow-container">
+      <div class="flow-title">Context Priority Chain</div>
+      <div class="flow-steps" id="flow2">
+        <div class="flow-step"><div class="flow-step-num" style="background:var(--green)">1</div><div class="flow-step-content"><div class="flow-step-label">Postgres (Best)</div><div class="flow-step-desc">Runs a targeted SQL query. Fast, precise, handles 50K+ rows. This is the production path.</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num" style="background:var(--gold)">2</div><div class="flow-step-content"><div class="flow-step-label">Normalized In-Memory (Good)</div><div class="flow-step-desc">Uses the pandas-processed data from cutsheet_normalizer.py. Works without a database but hits token limits on large files.</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num" style="background:var(--red)">3</div><div class="flow-step-content"><div class="flow-step-label">Legacy In-Memory (Fallback)</div><div class="flow-step-desc">Uses the old Define_Optic_Count module. Only exists for backward compatibility with small demos.</div></div></div>
+      </div>
+    </div>
+
+    <p>The response includes a <strong>context_source badge</strong> (POSTGRES, IN_MEMORY, RACK_ANALYZER, or EMPTY_FALLBACK) so you always know which path answered your question.</p>
+  </div>
+
+  <!-- Screen 4: Quiz -->
+  <div class="screen fade-in">
+    <div class="quiz" id="quiz5">
+      <div class="quiz-title">Check Your Understanding</div>
+
+      <div class="quiz-q">You're building a similar tool and a colleague says "let's just have the AI write SQL queries based on the user's question — it's simpler." What's the strongest argument against this approach?</div>
+      <div class="quiz-options" data-quiz="q5">
+        <div class="quiz-opt" data-correct="false" data-explain="While AI-generated SQL is slower (requires an LLM call), the bigger risk is correctness and security. Speed is a secondary concern.">AI-generated SQL would be too slow</div>
+        <div class="quiz-opt" data-correct="true" data-explain="LLMs can generate syntactically valid SQL that's semantically wrong — like counting A-side optics but forgetting Z-side, or joining tables incorrectly. With 50K rows of infrastructure data, a wrong count could lead to ordering the wrong number of optics or missing a failure. Pre-written templates are tested and proven correct for each question type. Plus, they prevent SQL injection by design.">The AI might generate SQL that looks right but returns wrong data — and with infrastructure data, wrong counts have real consequences</div>
+        <div class="quiz-opt" data-correct="false" data-explain="Cost is a factor but not the strongest argument. The real danger is incorrect data, not expensive data.">It would cost too much in API calls</div>
+        <div class="quiz-opt" data-correct="false" data-explain="LLMs can actually write SQL pretty well syntactically. The problem isn't syntax errors — it's subtle semantic errors that return plausible-looking but wrong results.">AIs can't write SQL</div>
+      </div>
+      <div class="quiz-explanation" id="q5-exp"></div>
+    </div>
+  </div>
+
+</section>
+</div>
+
+<!-- ======================================================================
+     MODULE 6 — THE BIG PICTURE
+     ====================================================================== -->
+<div class="module-wrapper" id="mod6">
+<section class="module">
+  <div class="module-badge">MODULE 06</div>
+  <h2 class="module-title">The Big Picture</h2>
+  <p class="module-subtitle">Let's zoom out and see how all the pieces connect, from Docker containers to Kubernetes deployment.</p>
+
+  <!-- Screen 1: Docker composition -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">Two Containers, One Command</h3>
+    <p>Atlas runs as two <span class="term" data-def="A lightweight, portable package that contains everything needed to run a piece of software: the code, runtime, libraries, and settings. Think of it as a shipping container for software — it works the same way no matter where you deploy it.">Docker containers</span> that talk to each other. <code>docker compose up</code> starts both.</p>
+
+    <div class="translation-block">
+      <div>
+        <div class="translation-header translation-header-code">docker-compose.yml</div>
+        <div class="translation-code"><span class="code-line"><span class="var">services</span>:</span>
+<span class="code-line">  <span class="fn">db</span>:</span>
+<span class="code-line">    <span class="var">image</span>: <span class="st">postgres:16-alpine</span></span>
+<span class="code-line">    <span class="var">ports</span>: [<span class="st">"9000:5432"</span>]</span>
+<span class="code-line">    <span class="var">volumes</span>:</span>
+<span class="code-line">      - <span class="st">./atlas_schema.sql:/docker-entrypoint-initdb.d/</span></span>
+<span class="code-line">    <span class="var">healthcheck</span>:</span>
+<span class="code-line">      <span class="var">test</span>: [<span class="st">"CMD-SHELL"</span>, <span class="st">"pg_isready"</span>]</span>
+<span class="code-line"></span>
+<span class="code-line">  <span class="fn">web</span>:</span>
+<span class="code-line">    <span class="var">build</span>: <span class="st">.</span></span>
+<span class="code-line">    <span class="var">ports</span>: [<span class="st">"5050:5050"</span>]</span>
+<span class="code-line">    <span class="var">depends_on</span>:</span>
+<span class="code-line">      <span class="fn">db</span>: { <span class="var">condition</span>: <span class="st">service_healthy</span> }</span></div>
+      </div>
+      <div>
+        <div class="translation-header translation-header-eng">PLAIN ENGLISH</div>
+        <div class="translation-english"><span class="eng-line">We're defining two services:</span>
+<span class="eng-line">First, a database container:</span>
+<span class="eng-line">  Use the official Postgres 16 image (small Alpine variant)</span>
+<span class="eng-line">  Map port 9000 on your machine to 5432 inside the container</span>
+<span class="eng-line">  On first startup, automatically run atlas_schema.sql</span>
+<span class="eng-line">    to create all the tables</span>
+<span class="eng-line">  Check every 5 seconds that Postgres is healthy</span>
+<span class="eng-line"> </span>
+<span class="eng-line">Second, the web app container:</span>
+<span class="eng-line">  Build it from the Dockerfile in this folder</span>
+<span class="eng-line">  Map port 5050 for the web UI</span>
+<span class="eng-line">  Don't start until the database reports healthy</span>
+<span class="eng-line">    (so the app never boots with no DB)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 2: Full architecture diagram -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">The Full Data Flow</h3>
+    <p>Here's every major component and how data moves between them, from upload to answer.</p>
+
+    <div class="flow-container">
+      <div class="flow-title">Atlas End-to-End Architecture</div>
+      <div class="flow-steps" id="flow3">
+        <div class="flow-step"><div class="flow-step-num" style="background:#555">📂</div><div class="flow-step-content"><div class="flow-step-label">Excel Cutsheet (.xlsx)</div><div class="flow-step-desc">The source of truth. Contains CUTSHEET tab (connections), SITE-HOSTS (device inventory), SITE-VARS (metadata), and optionally OVERHEAD (cab types).</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num" style="background:var(--teal)">🚪</div><div class="flow-step-content"><div class="flow-step-label">atlas_web_app.py (Flask, port 5050)</div><div class="flow-step-desc">Receives the upload. Extracts site code from filename or SITE-VARS sheet. Kicks off parallel processing.</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num" style="background:#777">⚙️</div><div class="flow-step-content"><div class="flow-step-label">cutsheet_profiles.py + atlas_data_loader.py</div><div class="flow-step-desc">Detects the cutsheet format (auto-detection via fingerprint scoring), normalizes column names, normalizes status strings, then bulk-inserts into Postgres (500 rows per batch).</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num" style="background:var(--purple)">🐘</div><div class="flow-step-content"><div class="flow-step-label">Postgres (cutsheet_connections + views)</div><div class="flow-step-desc">50,000+ rows stored with indexes on every queryable column. Materialized views (optic_inventory, device_summary) pre-compute common aggregations.</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num" style="background:var(--accent)">🧠</div><div class="flow-step-content"><div class="flow-step-label">query_intent.py → atlas_query_router.py</div><div class="flow-step-desc">User question classified by 14 domain routers. Matching SQL template executes against Postgres with parameterized inputs. Results formatted as compact text.</div></div></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step"><div class="flow-step-num" style="background:var(--gold)">🤖</div><div class="flow-step-content"><div class="flow-step-label">Anthropic / OpenAI API (Claude or GPT)</div><div class="flow-step-desc">Receives the formatted context + conversation history. Writes a natural-language answer grounded in the actual data. Cannot see raw database or make up numbers.</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 3: What you can do with this knowledge -->
+  <div class="screen fade-in">
+    <h3 class="screen-title">What You Can Do Now</h3>
+    <p>Now that you know how Atlas works, here's what you're equipped to do:</p>
+
+    <div class="pattern-cards">
+      <div class="pattern-card">
+        <div class="pattern-card-title">Steer AI Agents on Atlas</div>
+        <div class="pattern-card-body">When asking an AI to modify Atlas, you can say "add a domain router in query_intent.py that catches questions about power distribution" instead of "make it answer PDU questions." You know the architecture.</div>
+      </div>
+      <div class="pattern-card">
+        <div class="pattern-card-title">Debug Classification Issues</div>
+        <div class="pattern-card-body">When Atlas gives the wrong answer, you can trace the pipeline: was it classified wrong (check query_intent.py), did the SQL return bad data (check the template), or did the LLM misinterpret good data (check the formatted context)?</div>
+      </div>
+      <div class="pattern-card">
+        <div class="pattern-card-title">Apply These Patterns Elsewhere</div>
+        <div class="pattern-card-body">Grounded AI (no LLM-generated queries), keyword classification, parameterized SQL, upload scoping, three-tier fallback chains, HMAC auth — these patterns work in any data tool you build. You now have the vocabulary to request them.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Final Quiz -->
+  <div class="screen fade-in">
+    <div class="quiz" id="quiz6">
+      <div class="quiz-title">Final Challenge</div>
+
+      <div class="quiz-q">You upload a new cutsheet for the Ellendale site. The upload succeeds, but when you ask "how many optics do we have?", Atlas returns data from the <em>old</em> upload. What's the most likely cause?</div>
+      <div class="quiz-options" data-quiz="q6">
+        <div class="quiz-opt" data-correct="false" data-explain="If it was a browser cache issue, you wouldn't get real data at all — you'd get a stale HTML response. The fact that you're seeing actual (but wrong) database results means the problem is server-side.">The browser is caching the old response</div>
+        <div class="quiz-opt" data-correct="true" data-explain="When a new cutsheet is uploaded, the old upload's is_active flag should be set to FALSE, and the new one set to TRUE. Atlas auto-selects the latest active upload for queries. If the deactivation step failed (maybe a Postgres error during the load), both uploads would be active, and the 'latest' might still point to the old one depending on timing. Check the cutsheet_uploads table for is_active flags.">The old upload's is_active flag wasn't set to FALSE when the new upload was loaded</div>
+        <div class="quiz-opt" data-correct="false" data-explain="The LLM doesn't choose which upload to query. The upload scoping happens in the SQL WHERE clause, controlled by atlas_postgres_context.py. By the time the LLM sees the data, the upload selection is already done.">The LLM is remembering the old data from conversation history</div>
+        <div class="quiz-opt" data-correct="false" data-explain="Background loading is fire-and-forget, but if it failed entirely, you'd get no Postgres data (and the context_source badge would show IN_MEMORY, not POSTGRES). Seeing old data means data IS in Postgres — just the wrong version.">The background Postgres load thread failed silently</div>
+      </div>
+      <div class="quiz-explanation" id="q6-exp"></div>
+    </div>
+  </div>
+
+  <!-- Closing -->
+  <div class="screen fade-in" style="text-align:center;padding:var(--space-12) 0;">
+    <h3 class="screen-title" style="font-size:var(--text-3xl);">Course Complete 🎓</h3>
+    <p style="max-width:560px;margin:0 auto var(--space-6);">You now understand how Atlas turns a 50,000-row spreadsheet into instant, AI-powered answers. The patterns you learned here — grounded AI, keyword classification, parameterized SQL, upload scoping — are the building blocks of reliable data tools.</p>
+    <button class="hero-start" onclick="scrollToModule('hero')" style="background:var(--text-primary);">Back to top ↑</button>
+  </div>
+
+</section>
+</div>
+
+<!-- ======================================================================
+     JAVASCRIPT
+     ====================================================================== -->
+<script>
+(function() {
+  'use strict';
+
+  // --- Scroll-to-module ---
+  window.scrollToModule = function(id) {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // --- Progress bar + active nav ---
+  const progressFill = document.getElementById('progressFill');
+  const navLinks = document.querySelectorAll('.nav-link');
+  const modules = document.querySelectorAll('.module-wrapper, .hero');
+  let ticking = false;
+
+  function updateProgress() {
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    progressFill.style.width = pct + '%';
+
+    // Active nav link
+    let activeId = 'hero';
+    modules.forEach(function(m) {
+      if (m.getBoundingClientRect().top <= 120) activeId = m.id;
+    });
+    navLinks.forEach(function(l) {
+      l.classList.toggle('active', l.dataset.target === activeId);
+    });
+    ticking = false;
+  }
+
+  window.addEventListener('scroll', function() {
+    if (!ticking) { requestAnimationFrame(updateProgress); ticking = true; }
+  }, { passive: true });
+
+  // --- Scroll-triggered fade-in ---
+  const fadeEls = document.querySelectorAll('.fade-in');
+  const observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting) {
+        e.target.classList.add('visible');
+        observer.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.15 });
+  fadeEls.forEach(function(el) { observer.observe(el); });
+
+  // --- Flow step animations ---
+  document.querySelectorAll('.flow-steps').forEach(function(container) {
+    const steps = container.querySelectorAll('.flow-step');
+    const arrows = container.querySelectorAll('.flow-arrow');
+    const flowObs = new IntersectionObserver(function(entries) {
+      entries.forEach(function(e) {
+        if (e.isIntersecting) {
+          let delay = 0;
+          steps.forEach(function(step, i) {
+            setTimeout(function() { step.classList.add('visible'); }, delay);
+            delay += 200;
+            if (arrows[i]) {
+              setTimeout(function() { arrows[i].classList.add('visible'); }, delay);
+              delay += 100;
+            }
+          });
+          flowObs.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.2 });
+    flowObs.observe(container);
+  });
+
+  // --- Chat animation ---
+  document.querySelectorAll('.chat-container').forEach(function(chat) {
+    const msgs = chat.querySelectorAll('.chat-msg');
+    const chatObs = new IntersectionObserver(function(entries) {
+      entries.forEach(function(e) {
+        if (e.isIntersecting) {
+          let delay = 300;
+          msgs.forEach(function(m) {
+            setTimeout(function() { m.classList.add('visible'); }, delay);
+            delay += 600;
+          });
+          chatObs.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.3 });
+    chatObs.observe(chat);
+  });
+
+  // --- Quiz logic ---
+  document.querySelectorAll('.quiz-options').forEach(function(optGroup) {
+    const qid = optGroup.dataset.quiz;
+    const opts = optGroup.querySelectorAll('.quiz-opt');
+    const expEl = document.getElementById(qid + '-exp');
+    opts.forEach(function(opt) {
+      opt.addEventListener('click', function() {
+        if (opt.classList.contains('disabled')) return;
+        opts.forEach(function(o) { o.classList.add('disabled'); });
+        const isCorrect = opt.dataset.correct === 'true';
+        opt.classList.add(isCorrect ? 'correct' : 'wrong');
+        // Show the correct one too
+        if (!isCorrect) {
+          opts.forEach(function(o) {
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+          });
+        }
+        expEl.textContent = opt.dataset.explain;
+        expEl.className = 'quiz-explanation show ' + (isCorrect ? 'correct-exp' : 'wrong-exp');
+      });
+    });
+  });
+
+  // --- Glossary tooltips ---
+  let activeTooltip = null;
+  function removeTooltip() {
+    if (activeTooltip) { activeTooltip.remove(); activeTooltip = null; }
+  }
+
+  document.querySelectorAll('.term').forEach(function(term) {
+    function showTip() {
+      removeTooltip();
+      const tip = document.createElement('div');
+      tip.className = 'tooltip';
+      tip.textContent = term.dataset.def;
+      document.body.appendChild(tip);
+      const rect = term.getBoundingClientRect();
+      tip.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 330)) + 'px';
+      tip.style.top = (rect.top - tip.offsetHeight - 8) + 'px';
+      if (parseFloat(tip.style.top) < 50) {
+        tip.style.top = (rect.bottom + 8) + 'px';
+        tip.querySelector('::before') && (tip.style.setProperty('--arrow', 'top'));
+      }
+      requestAnimationFrame(function() { tip.classList.add('visible'); });
+      activeTooltip = tip;
+    }
+    term.addEventListener('mouseenter', showTip);
+    term.addEventListener('mouseleave', removeTooltip);
+    term.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (activeTooltip) removeTooltip(); else showTip();
+    });
+  });
+  document.addEventListener('click', removeTooltip);
+
+  // --- Keyboard navigation ---
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+    }
+    if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
+    }
+  });
+
+  // Initial state
+  updateProgress();
+})();
+</script>
+</body>
+</html>

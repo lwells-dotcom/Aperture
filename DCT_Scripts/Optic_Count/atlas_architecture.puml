@@ -1,0 +1,169 @@
+@startuml Atlas Architecture - Current vs Future
+
+title Atlas DCT Infrastructure Intelligence\nArchitecture Evolution
+
+skinparam backgroundColor #1a1a2e
+skinparam defaultFontColor #e0e0e0
+skinparam defaultFontSize 12
+skinparam titleFontSize 18
+skinparam titleFontColor #00d4ff
+skinparam rectangleBorderColor #444466
+skinparam rectangleBackgroundColor #16213e
+skinparam databaseBorderColor #444466
+skinparam databaseBackgroundColor #16213e
+skinparam cloudBorderColor #444466
+skinparam cloudBackgroundColor #16213e
+skinparam noteBorderColor #444466
+skinparam noteBackgroundColor #0f3460
+skinparam noteFontColor #e0e0e0
+skinparam arrowColor #00d4ff
+skinparam packageBorderColor #e94560
+skinparam packageBackgroundColor #1a1a2e
+skinparam packageFontColor #e94560
+
+' ============================================================
+' CURRENT ARCHITECTURE
+' ============================================================
+
+package "CURRENT STATE (In-Memory Pipeline)" as current #1a1a2e {
+
+    actor "User" as user1 #e94560
+
+    rectangle "Flask Web App\n(demo_web_app.py)\nPort 5050" as flask1 {
+        rectangle "Upload Endpoint\n/api/upload-count" as upload1 #0f3460
+        rectangle "Q&A Endpoint\n/api/sheet-qa" as qa1 #0f3460
+    }
+
+    rectangle "Cutsheet Normalizer\n(cutsheet_normalizer.py)" as norm1 {
+        rectangle "normalize_cutsheet()" as normalize #0f3460
+        rectangle "build_llm_context()" as buildctx #0f3460
+    }
+
+    rectangle "In-Memory Cache\n(pandas DataFrames)" as cache1 #e94560
+
+    rectangle "LLM Resilience Layer\n(llm_resilience.py)" as resilience1 {
+        rectangle "@with_retry\nExponential backoff\n429/5xx" as retry1 #0f3460
+        rectangle "@with_timeout\n45s ceiling" as timeout1 #0f3460
+        rectangle "@with_cache\nTTL response cache" as llmcache1 #0f3460
+    }
+
+    rectangle "Grounded AI\n(demo_auth_ai.py)" as ai1 {
+        rectangle "ask_grounded()" as ask1 #0f3460
+        rectangle "Fallback Chain" as fallback1 #0f3460
+    }
+
+    cloud "Anthropic API\n(Claude)" as claude1
+    cloud "OpenAI API\n(GPT-4o-mini)" as openai1
+
+    user1 -down-> upload1 : "Upload Excel/CSV"
+    upload1 -down-> normalize : "Raw DataFrame"
+    normalize -down-> buildctx : "Normalized dict"
+    buildctx -down-> cache1 : "**ENTIRE** context dict\nstored in memory"
+
+    user1 -down-> qa1 : "Ask question"
+    qa1 -down-> cache1 : "Fetch full context"
+    cache1 -down-> ai1 : "**ALL** data as JSON\n(~8k+ tokens)"
+    ai1 -down-> resilience1
+    resilience1 -down-> claude1 : "Primary"
+    resilience1 -down-> openai1 : "Fallback"
+
+    note right of cache1
+        **Pain Point:**
+        Every question sends the
+        entire summarized context
+        (~8k tokens for Quincy).
+
+        At 100k+ rows or multi-site:
+        - Token limit exceeded
+        - Cost explodes
+        - Context too noisy
+    end note
+}
+
+' ============================================================
+' FUTURE ARCHITECTURE
+' ============================================================
+
+package "FUTURE STATE (Postgres-Backed Pipeline)" as future #1a1a2e {
+
+    actor "User" as user2 #00d4ff
+
+    rectangle "Flask Web App\n(demo_web_app.py)\nPort 5050" as flask2 {
+        rectangle "Upload Endpoint\n/api/upload-count" as upload2 #0f3460
+        rectangle "Q&A Endpoint\n/api/sheet-qa" as qa2 #0f3460
+    }
+
+    rectangle "Data Loader\n(atlas_data_loader.py)" as loader {
+        rectangle "load_cutsheet()" as loadcut #0f3460
+        rectangle "load_site_hosts()" as loadhosts #0f3460
+        rectangle "load_site_ip_data()" as loadip #0f3460
+    }
+
+    database "PostgreSQL\n(Port 9000)" as pg {
+        rectangle "devices" as tbl_dev #0f3460
+        rectangle "connections" as tbl_conn #0f3460
+        rectangle "optic_inventory\n(materialized view)" as mv_optic #0f3460
+        rectangle "cable_status_summary\n(materialized view)" as mv_cable #0f3460
+    }
+
+    rectangle "Query Router\n(NEW)" as router #e94560 {
+        rectangle "Question Classifier" as classify #0f3460
+        rectangle "Query Templates\n(10-15 SQL patterns)" as templates #0f3460
+    }
+
+    rectangle "LLM Resilience Layer\n(llm_resilience.py)" as resilience2 {
+        rectangle "@with_retry" as retry2 #0f3460
+        rectangle "@with_timeout" as timeout2 #0f3460
+        rectangle "@with_cache" as llmcache2 #0f3460
+    }
+
+    rectangle "Grounded AI\n(demo_auth_ai.py)" as ai2 {
+        rectangle "ask_grounded()" as ask2 #0f3460
+        rectangle "Fallback Chain" as fallback2 #0f3460
+    }
+
+    cloud "Anthropic API\n(Claude)" as claude2
+    cloud "OpenAI API\n(GPT-4o-mini)" as openai2
+
+    user2 -down-> upload2 : "Upload Excel/CSV\n(one-time per site)"
+    upload2 -down-> loader : "Parse + load"
+    loader -down-> pg : "Bulk INSERT\n+ refresh views"
+
+    user2 -down-> qa2 : "Ask question"
+    qa2 -down-> router : "Natural language\nquestion"
+    router -down-> pg : "Targeted SQL\n(filtered query)"
+    pg -up-> router : "Small result set\n(relevant rows only)"
+    router -down-> ai2 : "**FOCUSED** context\n(~1-2k tokens)"
+    ai2 -down-> resilience2
+    resilience2 -down-> claude2 : "Primary"
+    resilience2 -down-> openai2 : "Fallback"
+
+    note right of router
+        **Key Improvement:**
+        Question -> SQL template -> small result set
+
+        "LLDP failures?" -> cable_status_summary view
+        "Device connections?" -> connections WHERE device
+        "Optic counts?" -> optic_inventory view
+        "Cross-site compare?" -> JOIN across sites
+
+        Token cost stays flat regardless
+        of data volume.
+    end note
+
+    note right of pg
+        **Persistence:**
+        Load once, query forever.
+        No re-upload per session.
+        Multi-site support built in.
+        Versioned via cutsheet_uploads.
+    end note
+}
+
+' ============================================================
+' COMPARISON ARROW
+' ============================================================
+
+current -[hidden]right-> future
+
+@enduml

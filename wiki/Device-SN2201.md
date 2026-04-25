@@ -1,0 +1,18 @@
+---
+type: device
+model: "SN2201"
+updated: 2026-04-23
+---
+
+# SN2201
+
+Total Port References: 44890
+Data Halls: dh201, dh202, dh203, dh204
+
+## Compatible Optics
+
+[[Optic-CAT6a-to-1000BASE-LX-LH-SFP-via-MEDIA-CONVERTER-CHASSIS|CAT6a to 1000BASE-LX/LH SFP via MEDIA CONVERTER CHASSIS]], [[Optic-QSFP28-100G-DR1|QSFP28-100G-DR1]], [[Optic-SFP-BASE-10G-LR|SFP-BASE-10G-LR]]
+
+## Source Files
+
+`raw/MASTER-US-CENTRAL-08A-US-LZL01-ELLENDALE.xlsx`, `raw/MASTER-US-CENTRAL-08B-US-LZL01-ELLENDALE.xlsx`
