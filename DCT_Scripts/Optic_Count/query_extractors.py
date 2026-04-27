@@ -41,9 +41,10 @@ _RACK_DH_RE = re.compile(
     re.I,
 )
 
-# Cabinet / rack number after keyword
+# Cabinet / rack number after keyword — requires at least one digit so verbs
+# like "has", "are", "with" don't become fake rack identifiers.
 _RACK_KEYWORD_RE = re.compile(
-    r"\b(?:rack|cabinet|cab)\s+([A-Z0-9:_-]{2,20})\b", re.I
+    r"\b(?:rack|cabinet|cab)\s+#?([A-Z0-9:_-]*\d[A-Z0-9:_-]*)\b", re.I
 )
 
 # Optic types: QSFP28, SFP+, QSFP-DD, QSFPDD-400G-DR4, etc.
@@ -122,6 +123,19 @@ _ROLE_COMPILED = [(re.compile(pat, re.I), role) for pat, role in ROLE_KEYWORD_MA
 
 # IP address
 _IP_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){1,3})\b")
+
+# Cable media type (CAT6a, MPO12, MPO8, LC-TO-LC, SMF, MMF, fiber, copper)
+_CABLE_TYPE_RE = re.compile(
+    r"\b(cat6a?|mpo[\s-]?\d+|lc[\s-]?to[\s-]?lc|smf|mmf|"
+    r"single[\s-]mode|multi[\s-]mode|fiber|copper)\b",
+    re.I,
+)
+
+# Data-hall filter (e.g. "dh201", "DH 204", "data hall 201")
+_DATA_HALL_FILTER_RE = re.compile(
+    r"\bdata[\s-]?hall\s*(\d+)\b|\bdh\s*(\d+)\b",
+    re.I,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +319,24 @@ def extract_ip(question: str) -> str:
     """Extract an IP address from the question. Returns '' if none."""
     m = _IP_RE.search(question)
     return m.group(1) if m else ""
+
+
+def extract_cable_type(question: str) -> str:
+    """Extract cable media type (e.g. CAT6a, MPO12, SMF, fiber, copper). Returns '' if none."""
+    m = _CABLE_TYPE_RE.search(question)
+    return m.group(1).upper() if m else ""
+
+
+def extract_data_hall(question: str) -> str:
+    """Extract normalized data hall ID (e.g. 'dh202') from 'dh202', 'DH 204', 'data hall 201'.
+
+    Returns '' if none found.
+    """
+    m = _DATA_HALL_FILTER_RE.search(question)
+    if m:
+        num = m.group(1) or m.group(2)
+        return f"dh{num}"
+    return ""
 
 
 def has_loc_token(question: str) -> bool:

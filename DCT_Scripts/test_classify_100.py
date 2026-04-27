@@ -174,7 +174,7 @@ EXPECTED = [
     "section_summary", "section_summary", "section_summary", "section_summary", "section_summary",
     # Q91-Q100 Risk/Anomaly
     "model_search", "optic_count", "connection_status", "lldp_failures", "optic_count",
-    "model_search", "optic_count", "section_completion", "section_summary", "connection_status",
+    "model_search", "cable_type_summary", "section_completion", "section_summary", "connection_status",
 ]
 
 

@@ -76,7 +76,11 @@ def build_postgres_context(
                 if row:
                     upload_id = row[0]
 
-    result = route_question(question, site_id, upload_id=upload_id)
+    try:
+        result = route_question(question, site_id, upload_id=upload_id)
+    except Exception as exc:
+        log.exception("route_question raised outside its own handler")
+        return {"ok": False, "error": str(exc), "question_type": "unknown"}
 
     if not result.get("ok"):
         return {
@@ -146,7 +150,7 @@ def build_postgres_context_for_general(
                 if row:
                     upload_id = row[0]
 
-    t0 = time.time()
+    t0 = time.monotonic()
     uid = upload_id
     try:
         with managed_connection() as conn:

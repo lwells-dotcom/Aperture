@@ -18,11 +18,13 @@ import re
 import tempfile
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import io
 from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
+import openpyxl.utils.exceptions
 
 import Define_Optic_Count
 import Source_count_Netbox
@@ -33,6 +35,7 @@ import cutsheet_preprocessor
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 
 @app.after_request
 def set_security_headers(response):
@@ -91,9 +94,8 @@ _RATE_LIMIT_MAX_KEYS = 5000
 
 
 def _get_client_ip() -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    # Trust only the direct connection — X-Forwarded-For is trivially spoofable.
+    # Add a TRUSTED_PROXIES allowlist if a reverse proxy is deployed in front.
     return request.remote_addr or "unknown"
 
 
@@ -102,7 +104,7 @@ def _check_rate_limit(key: str) -> bool:
     with _state_lock:
         if len(_RATE_LIMIT_STORE) > _RATE_LIMIT_MAX_KEYS:
             expired = [k for k, (_, ws) in _RATE_LIMIT_STORE.items()
-                       if now - ws > _RATE_LIMIT_WINDOW]
+                       if now - ws > _RATE_LIMIT_WINDOW][:100]
             for k in expired:
                 del _RATE_LIMIT_STORE[k]
         count, window_start = _RATE_LIMIT_STORE.get(key, (0, now))
@@ -233,12 +235,15 @@ def _sse_stream(target_fn, *args, **kwargs):
     its output as Server-Sent Events.  target_fn must signal completion
     by putting None into the queue (same contract as the desktop version).
     """
-    q = queue.Queue()
+    q = queue.Queue(maxsize=500)
     threading.Thread(target=target_fn, args=(*args, q), kwargs=kwargs, daemon=True).start()
 
     def generate():
         while True:
-            msg = q.get()
+            try:
+                msg = q.get(timeout=60)
+            except queue.Empty:
+                break
             if msg is None:
                 yield "data: [DONE]\n\n"
                 break
@@ -431,8 +436,9 @@ def upload_count():
         else:
             _, context = Define_Optic_Count.count_and_build_context([str(save_path)])
             context["ts"] = time.time()
-    except Exception as exc:
-        return jsonify({"error": f"Failed to parse file: {exc}"}), 500
+    except Exception:
+        log.exception("File upload processing failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         Define_Optic_Count.clear_excel_cache()
 
@@ -460,7 +466,10 @@ def count_by_status():
 
     # Re-run against the saved file path stored in context
     files = [f["file_path"] for f in USER_CONTEXT[claims["sub"]].get("files", [])]
-    result_text = Define_Optic_Count.count_all_files_gui_by_status(files)
+    try:
+        result_text = Define_Optic_Count.count_all_files_gui_by_status(files)
+    except (FileNotFoundError, OSError):
+        return jsonify({"error": "File no longer available — re-upload to refresh"}), 400
     return jsonify({"ok": True, "output": result_text})
 
 
@@ -523,8 +532,11 @@ def buildsheet():
 
     try:
         result = build_sheet_processor.process_rack(cut_path, tpl_path, room, rack)
-    except (FileNotFoundError, ValueError, OSError) as exc:
-        return jsonify({"error": str(exc)}), 500
+    except ValueError:
+        return jsonify({"error": "Invalid input parameters"}), 400
+    except (FileNotFoundError, OSError, openpyxl.utils.exceptions.InvalidFileException, zipfile.BadZipFile):
+        log.exception("Rack sheet generation failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         try:
             os.unlink(cut_path)
@@ -572,8 +584,11 @@ def buildsheet_layout():
 
     try:
         excel_bytes = build_sheet_processor.generate_layout_workbook(cut_path, tpl_path, room)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    except ValueError:
+        return jsonify({"error": "Invalid input parameters"}), 400
+    except Exception:
+        log.exception("Layout workbook generation failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         try:
             os.unlink(cut_path)
@@ -606,8 +621,11 @@ def buildsheet_dh():
 
     try:
         result = build_sheet_processor.process_room(cut_path, room)
-    except (FileNotFoundError, ValueError, OSError) as exc:
-        return jsonify({"error": str(exc)}), 500
+    except ValueError:
+        return jsonify({"error": "Invalid input parameters"}), 400
+    except (FileNotFoundError, OSError, openpyxl.utils.exceptions.InvalidFileException, zipfile.BadZipFile):
+        log.exception("Room sheet generation failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         try:
             os.unlink(cut_path)
@@ -620,6 +638,23 @@ def buildsheet_dh():
 # ---------------------------------------------------------------------------
 # AI Q&A
 # ---------------------------------------------------------------------------
+
+def _get_latest_upload_for_user(conn, username):
+    """Return {site_code, site_id, upload_id} for the user's latest active upload, or None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT s.id AS site_id, s.site_code, cu.id AS upload_id
+               FROM cutsheet_uploads cu
+               JOIN sites s ON cu.site_id = s.id
+               WHERE cu.uploaded_by = %s AND cu.is_active = TRUE
+               ORDER BY cu.created_at DESC LIMIT 1""",
+            (username,),
+        )
+        row = cur.fetchone()
+    if row:
+        return {"site_code": row[1], "site_id": row[0], "upload_id": row[2]}
+    return None
+
 
 @app.post("/api/ask")
 def ask_ai():
@@ -638,44 +673,46 @@ def ask_ai():
     username = claims["sub"]
 
     # --- Try Postgres context first ---
+    pg_fallback_reason = None
+
     with _state_lock:
         site_info = USER_SITE.get(username)
+
+    if not site_info and not _check_postgres():
+        pg_fallback_reason = "postgres_unreachable"
 
     # If no in-memory site info, try recovering from Postgres
     if not site_info and _check_postgres():
         try:
             from atlas_data_loader import managed_connection
             with managed_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """SELECT s.id AS site_id, s.site_code, cu.id AS upload_id
-                           FROM cutsheet_uploads cu
-                           JOIN sites s ON cu.site_id = s.id
-                           WHERE cu.uploaded_by = %s AND cu.is_active = TRUE
-                           ORDER BY cu.created_at DESC LIMIT 1""",
-                        (username,),
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        site_info = {
-                            "site_code": row[1],
-                            "site_id": row[0],
-                            "upload_id": row[2],
-                        }
-                        with _state_lock:
-                            USER_SITE[username] = site_info
-                        log.info("Recovered site context from Postgres for user=%s", username)
+                recovered = _get_latest_upload_for_user(conn, username)
+            if recovered:
+                site_info = recovered
+                with _state_lock:
+                    USER_SITE[username] = site_info
+                log.info("Recovered site context from Postgres for user=%s", username)
         except Exception as exc:
             log.warning("Postgres site recovery failed: %s", exc)
+
+    if not site_info and pg_fallback_reason is None:
+        pg_fallback_reason = "no_active_upload_for_user"
 
     pg_context = None
     if site_info and _check_postgres():
         try:
             from atlas_postgres_context import build_postgres_context
+            _t0 = time.monotonic()
             pg_context = build_postgres_context(
                 question, site_info["site_id"],
                 upload_id=site_info.get("upload_id"),
             )
+            _elapsed = time.monotonic() - _t0
+            if _elapsed > 30:
+                log.warning(
+                    "build_postgres_context took %.1fs (>30s threshold) for user=%s",
+                    _elapsed, username,
+                )
             if pg_context and "error" not in pg_context:
                 log.info(
                     "Postgres context: type=%s tokens=%s elapsed=%ss",
@@ -686,6 +723,11 @@ def ask_ai():
         except Exception as exc:
             log.warning("Postgres context build failed (falling back): %s", exc)
             pg_context = None
+            pg_fallback_reason = f"build_failed: {exc}"
+
+    if pg_context and "error" in pg_context:
+        pg_fallback_reason = f"context_error: {pg_context['error']}"
+        pg_context = None
 
     # Build sheet context: try in-memory, fall back to Postgres
     with _state_lock:
@@ -739,6 +781,8 @@ def ask_ai():
         resp["question_type"] = pg_context.get("question_type", "")
         resp["upload_id"] = site_info.get("upload_id") if site_info else None
         resp["row_count"] = pg_context.get("row_count", 0)
+        resp["classification_confidence"] = pg_context.get("confidence")
+        resp["classification_reason"] = pg_context.get("classification_reason")
     elif rack_ctx:
         resp["context_source"] = "RACK_ANALYZER"
         resp["question_type"] = rack_ctx.get("question_type", "")
@@ -747,9 +791,8 @@ def ask_ai():
     else:
         resp["context_source"] = "EMPTY_FALLBACK"
 
-    # Add pg_warning if Postgres was attempted but failed
-    if site_info and _check_postgres() and not pg_context:
-        resp["pg_warning"] = "Postgres context build failed (falling back to in-memory)"
+    if resp["context_source"] != "POSTGRES" and pg_fallback_reason:
+        resp["pg_fallback_reason"] = pg_fallback_reason
 
     _audit("ask_ai", username, {"question": question})
     return jsonify(resp)

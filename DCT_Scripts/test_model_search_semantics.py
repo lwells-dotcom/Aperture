@@ -134,5 +134,25 @@ class ModelSearchSemanticsTests(unittest.TestCase):
         self.assertIn("showing top 200 by matching row count", text)
 
 
+    def test_model_with_data_hall_routes_to_model_search_with_filter(self):
+        # Classifier must return model_search, not location_lookup
+        self.assertEqual(classify_question("how many SN5610s in dh202"), "model_search")
+
+        # build_query_params must populate data_hall_filter with 'dh202:%' pattern
+        params = build_query_params("how many SN5610s in dh202", "model_search", 1)
+        self.assertEqual(params["data_hall_filter"], "dh202:%")
+        self.assertIn("SN5610", params["model_pattern"])
+
+        # Without a data hall the filter must be empty (no scoping)
+        params_no_hall = build_query_params("how many SN5610s total", "model_search", 1)
+        self.assertEqual(params_no_hall["data_hall_filter"], "")
+
+        # Alternate phrasing — still model_search
+        self.assertEqual(
+            classify_question("List SN5610 devices in data hall dh202"),
+            "model_search",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -121,18 +121,11 @@ def managed_connection() -> Generator:
     conn = pool.getconn()
     try:
         yield conn
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         pool.putconn(conn)
-
-
-def get_connection():
-    """Get a connection from the pool. Caller must call return_connection()."""
-    return _get_pool().getconn()
-
-
-def return_connection(conn) -> None:
-    """Return a connection obtained via get_connection() back to the pool."""
-    _get_pool().putconn(conn)
 
 
 _pg_ok_at: float = 0.0
@@ -179,7 +172,6 @@ def upsert_site(conn, site_code: str, site_name: str = "") -> int:
             (site_code, site_name or site_code),
         )
         site_id = cur.fetchone()[0]
-    conn.commit()
     return site_id
 
 
@@ -209,7 +201,6 @@ def create_upload(conn, site_id: int, filename: str, uploaded_by: str = "",
              row_count, file_hash),
         )
         upload_id = cur.fetchone()[0]
-    conn.commit()
     return upload_id
 
 
@@ -410,6 +401,12 @@ def load_cutsheet(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int:
         (Canon.Z_LOC_CAB_RU if HAS_PROFILES else "Z-LOC:CAB:RU"),
         cable_id_col,
         cable_type_col,
+        (Canon.A_BREAKOUT_LOC if HAS_PROFILES else "A-BREAKOUT LOC:CAB:RU"),
+        (Canon.A_BREAKOUT_PORT if HAS_PROFILES else "A-BREAKOUT SLOT:PORT"),
+        (Canon.Z_BREAKOUT_LOC if HAS_PROFILES else "Z-BREAKOUT LOC:CAB:RU"),
+        (Canon.Z_BREAKOUT_PORT if HAS_PROFILES else "Z-BREAKOUT SLOT:PORT"),
+        (Canon.A_PATCH_PANEL if HAS_PROFILES else "A-PATCH-PANEL LOC:CAB:RU:PORT"),
+        (Canon.Z_PATCH_PANEL if HAS_PROFILES else "Z-PATCH-PANEL LOC:CAB:RU:PORT"),
     ]
     # Pre-clean: fillna + str + strip on all mapped columns (vectorized)
     for col in _col_map:
@@ -480,25 +477,57 @@ def load_cutsheet(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int:
         return 0
 
     with conn.cursor() as cur:
-        # Insert connections + raw JSON in one pass using a CTE.
-        # The CTE inserts into cutsheet_connections (with dedup via ON CONFLICT
-        # DO NOTHING) and RETURNING gives us only the IDs that were actually
-        # inserted, which we then use to insert raw rows.
+        # Single CTE: insert connections and their raw rows atomically.
+        # The named input CTE exposes raw_json so raw_ins can pair each
+        # connection_id with its source row's JSON — correct even when
+        # ON CONFLICT DO NOTHING skips duplicates (no positional zip needed).
         psycopg2.extras.execute_values(
             cur,
-            """WITH ins AS (
+            """WITH input(upload_id, site_id, section,
+                          a_device, a_port, a_optic, a_locode, a_model, a_loc_cab_ru,
+                          z_device, z_port, z_optic, z_locode, z_model, z_loc_cab_ru,
+                          cable_id, cable_type,
+                          a_breakout_loc, a_breakout_port, z_breakout_loc, z_breakout_port,
+                          a_patch_panel, z_patch_panel,
+                          status, status_normalized,
+                          raw_json) AS (
+                 VALUES %s
+               ),
+               ins AS (
                  INSERT INTO cutsheet_connections
                    (upload_id, site_id, section,
                     a_device, a_port, a_optic, a_locode, a_model, a_loc_cab_ru,
                     z_device, z_port, z_optic, z_locode, z_model, z_loc_cab_ru,
-                    cable_id, cable_type, status, status_normalized)
-                 VALUES %s
+                    cable_id, cable_type,
+                    a_breakout_loc, a_breakout_port, z_breakout_loc, z_breakout_port,
+                    a_patch_panel, z_patch_panel,
+                    status, status_normalized)
+                 SELECT upload_id, site_id, section,
+                        a_device, a_port, a_optic, a_locode, a_model, a_loc_cab_ru,
+                        z_device, z_port, z_optic, z_locode, z_model, z_loc_cab_ru,
+                        cable_id, cable_type,
+                        a_breakout_loc, a_breakout_port, z_breakout_loc, z_breakout_port,
+                        a_patch_panel, z_patch_panel,
+                        status, status_normalized
+                 FROM input
                  ON CONFLICT DO NOTHING
-                 RETURNING id
+                 RETURNING id, upload_id, a_device, a_port, z_device, z_port, cable_id
+               ),
+               raw_ins AS (
+                 INSERT INTO cutsheet_raw_rows (connection_id, raw_row)
+                 SELECT ins.id, input.raw_json::jsonb
+                 FROM ins
+                 JOIN input
+                   ON input.upload_id  = ins.upload_id
+                  AND input.a_device   = ins.a_device
+                  AND input.a_port     = ins.a_port
+                  AND input.z_device   = ins.z_device
+                  AND input.z_port     = ins.z_port
+                  AND COALESCE(input.cable_id, '') = COALESCE(ins.cable_id, '')
+                 ON CONFLICT (connection_id) DO NOTHING
                )
                SELECT count(*) FROM ins""",
-            # Strip the raw_json (last element) before passing to the INSERT
-            [r[:-1] for r in rows],
+            rows,
             page_size=500,
         )
         result = cur.fetchone()
@@ -510,30 +539,6 @@ def load_cutsheet(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int:
                 "(deduped by cable_id or port identity)", n_dupes,
             )
 
-        # Now insert raw rows for all connections that exist.
-        # Re-query the IDs we just inserted for this upload to pair with raw JSON.
-        cur.execute(
-            "SELECT id FROM cutsheet_connections "
-            "WHERE upload_id = %s ORDER BY id",
-            (upload_id,),
-        )
-        inserted_ids = cur.fetchall()
-        # Build raw tuples: we can't perfectly pair by position after dedup,
-        # but since rows and inserted_ids are both ordered, zip is safe.
-        raw_tuples = [
-            (r[0], rows[i][-1]) for i, r in enumerate(inserted_ids)
-            if i < len(rows)
-        ]
-        if raw_tuples:
-            psycopg2.extras.execute_values(
-                cur,
-                """INSERT INTO cutsheet_raw_rows (connection_id, raw_row)
-                   VALUES %s ON CONFLICT (connection_id) DO NOTHING""",
-                raw_tuples,
-                page_size=500,
-            )
-
-    conn.commit()
     return n_inserted
 
 
@@ -589,7 +594,6 @@ def load_site_hosts(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int
             rows,
             page_size=500,
         )
-    conn.commit()
     return len(rows)
 
 
@@ -690,7 +694,6 @@ def load_burndown(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int:
             rows,
             page_size=500,
         )
-    conn.commit()
     return len(rows)
 
 
@@ -737,7 +740,6 @@ def backfill_device_roles(conn, upload_id: int, site_id: int) -> Dict[str, int]:
         )
         z_updated = cur.rowcount
 
-    conn.commit()
     log.info(
         "backfill_device_roles: a_role updated=%d  z_role updated=%d",
         a_updated, z_updated,
@@ -919,7 +921,6 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
             if deactivated:
                 log.info("Deactivated %d previous upload(s) for site %s",
                          deactivated, site_code)
-            conn.commit()
 
             upload_id = create_upload(
                 conn, site_id, os.path.basename(file_path), uploaded_by,
@@ -934,27 +935,41 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
             # Use active_sheets so "Copy of SITE-HOSTS" gets skipped.
             hosts_loaded = 0
             if not file_path.lower().endswith(".csv"):
+                with conn.cursor() as _cur:
+                    _cur.execute("SAVEPOINT sp_hosts")
                 try:
                     for sn in active_sheets:
                         if sn.strip().casefold() in ("site-hosts", "hosts", "host inventory", "devices"):
                             host_df = pd.read_excel(xls, sheet_name=sn)
                             hosts_loaded = load_site_hosts(conn, upload_id, site_id, host_df)
                             break
+                    with conn.cursor() as _cur:
+                        _cur.execute("RELEASE SAVEPOINT sp_hosts")
                 except Exception as exc:
+                    with conn.cursor() as _cur:
+                        _cur.execute("ROLLBACK TO SAVEPOINT sp_hosts")
                     log.warning("Host loading failed: %s", exc)
 
             # H8: Backfill device roles from host_inventory into cutsheet_connections.
             # Only useful when a SITE-HOSTS tab was present and actually loaded rows.
             roles_backfilled: Dict[str, int] = {"a_updated": 0, "z_updated": 0}
             if hosts_loaded > 0:
+                with conn.cursor() as _cur:
+                    _cur.execute("SAVEPOINT sp_roles")
                 try:
                     roles_backfilled = backfill_device_roles(conn, upload_id, site_id)
+                    with conn.cursor() as _cur:
+                        _cur.execute("RELEASE SAVEPOINT sp_roles")
                 except Exception as exc:
+                    with conn.cursor() as _cur:
+                        _cur.execute("ROLLBACK TO SAVEPOINT sp_roles")
                     log.warning("Role backfill failed (non-fatal): %s", exc)
 
             # Try loading BURNDOWN tab if present (reuse xls from above)
             burndown_loaded = 0
             if not file_path.lower().endswith(".csv"):
+                with conn.cursor() as _cur:
+                    _cur.execute("SAVEPOINT sp_burndown")
                 try:
                     for sn in xls.sheet_names:
                         if sn.strip().casefold() == "burndown":
@@ -962,10 +977,17 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
                             burndown_loaded = load_burndown(conn, upload_id, site_id, bd_df)
                             log.info("Burndown loaded: %s rows", burndown_loaded)
                             break
+                    with conn.cursor() as _cur:
+                        _cur.execute("RELEASE SAVEPOINT sp_burndown")
                 except Exception as exc:
+                    with conn.cursor() as _cur:
+                        _cur.execute("ROLLBACK TO SAVEPOINT sp_burndown")
                     log.warning("Burndown loading failed (non-fatal): %s", exc)
 
-            # Refresh materialized views
+            # Single commit for all data (essential + optional helpers)
+            conn.commit()
+
+            # Refresh materialized views (has its own commit)
             try:
                 refresh_views(conn)
             except Exception as exc:

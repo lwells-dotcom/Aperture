@@ -8,6 +8,7 @@ given room designator + rack number.
 Mirrors the logic of Build Sheet V2.2.1.xlsx.
 """
 
+import functools
 import io
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -226,6 +227,7 @@ def _cable_label(cable, perspective_side):
 # Cab type + elevation helpers
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _overhead_rack_to_cab_type(cutsheet_path):
     """
     Load the OVERHEAD sheet once and return a dict of {rack_int: cab_type_str}
@@ -287,19 +289,16 @@ def _cab_type_summary(cutsheet_path, cables_raw, room_filter):
     return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
 
 
-def _lookup_elevation(template_path, cab_type):
+def _lookup_elevation(wb, cab_type):
     """
-    Open the MASTER-REGION-TEMPLATE and return the elevation rows for
-    the given cab type from the sheet named 'ELEV {cab_type}'.
+    Return elevation rows for the given cab type from an already-open workbook.
+    Reads from the sheet named 'ELEV {cab_type}'.
     """
     sheet_name = f'ELEV {cab_type}'
-    wb = openpyxl.load_workbook(template_path, read_only=True, data_only=True)
     if sheet_name not in wb.sheetnames:
-        wb.close()
         return []
 
     data = [row for row in wb[sheet_name].iter_rows(values_only=True)]
-    wb.close()
 
     # Find header row (contains RU-BASE and DEVICE NAME)
     header_idx = next(
@@ -350,45 +349,38 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
 
     # -- Load cutsheet workbook --
     wb_cut = openpyxl.load_workbook(cutsheet_path, read_only=True, data_only=True)
-    cut_tab = _find_cutsheet_tab(wb_cut) or 'CUTSHEET'
-    cables_raw = _read_sheet(wb_cut, cut_tab, CUTSHEET_COLS)
+    try:
+        cut_tab = _find_cutsheet_tab(wb_cut) or 'CUTSHEET'
+        cables_raw = _read_sheet(wb_cut, cut_tab, CUTSHEET_COLS)
 
-    # -- Enrich from SITE-HOSTS if present --
-    hosts_by_loc = {}
-    hosts_raw = _read_sheet(wb_cut, 'SITE-HOSTS', HOSTS_COLS)
-    for h in hosts_raw:
-        loc = h.get('loc', '')
-        if loc:
-            hosts_by_loc[loc] = h
-    wb_cut.close()
+        # -- Enrich from SITE-HOSTS if present --
+        hosts_by_loc = {}
+        hosts_raw = _read_sheet(wb_cut, 'SITE-HOSTS', HOSTS_COLS)
+        for h in hosts_raw:
+            loc = h.get('loc', '')
+            if loc:
+                hosts_by_loc[loc] = h
+    finally:
+        wb_cut.close()
 
     room_filter = _resolve_room_filter(cables_raw, hosts_by_loc, room_filter, rack_filter)
 
     # -- Cab type from OVERHEAD + elevation from template --
-    cab_type      = _lookup_cab_type(cutsheet_path, rack_filter)
-    elevation     = _lookup_elevation(template_path, cab_type) if cab_type and template_path else []
+    cab_type = _lookup_cab_type(cutsheet_path, rack_filter)
+    if cab_type and template_path:
+        _wb_tpl = openpyxl.load_workbook(template_path, read_only=True, data_only=True)
+        elevation = _lookup_elevation(_wb_tpl, cab_type)
+        _wb_tpl.close()
+    else:
+        elevation = []
     cab_type_summary = _cab_type_summary(cutsheet_path, cables_raw, room_filter)
 
-    # -- Filter cables where this rack is the A-side only --
-    # Excluding Z-side-only cables prevents duplicate links when two racks
-    # generate cable maps: each link is owned by its A-side rack.
+    # -- Single pass: rack_cables, loc_statuses, devices, and optic counts --
     rack_cables = []
-    for cable in cables_raw:
-        a_in = _loc_in_rack(cable.get('a_loc', ''), room_filter, rack_filter)
-        if not a_in:
-            continue
-        z_in = _loc_in_rack(cable.get('z_loc', ''), room_filter, rack_filter)
-        cable['a_in_rack'] = True
-        cable['z_in_rack'] = z_in
-        rack_cables.append(cable)
-
-    # -- Split internal vs cab-to-cab --
-    internal     = [c for c in rack_cables if c['a_in_rack'] and c['z_in_rack']]
-    cab_to_cab   = [c for c in rack_cables if not (c['a_in_rack'] and c['z_in_rack'])]
-
-    # -- Build per-location cable status list from both sides --
     loc_statuses = defaultdict(list)
     devices = {}
+    optic_counts = defaultdict(int)
+    optic_locations = []
 
     def _upsert_device(loc, ru, dns_name='', model='', status=''):
         if not loc:
@@ -413,18 +405,35 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
             current['status'] = status
 
     for cable in cables_raw:
-        for prefix in ('a', 'z'):
-            loc = cable.get(f'{prefix}_loc', '')
-            if not _loc_in_rack(loc, room_filter, rack_filter):
+        a_loc = cable.get('a_loc', '')
+        z_loc = cable.get('z_loc', '')
+        a_in = _loc_in_rack(a_loc, room_filter, rack_filter)
+        z_in = _loc_in_rack(z_loc, room_filter, rack_filter)
+
+        if a_in:
+            cable['a_in_rack'] = True
+            cable['z_in_rack'] = z_in
+            rack_cables.append(cable)
+
+        for in_rack, prefix, loc in ((a_in, 'a', a_loc), (z_in, 'z', z_loc)):
+            if not (in_rack and loc):
                 continue
             loc_statuses[loc].append(cable.get('status', ''))
             _, _, ru = _parse_loc(loc)
-            _upsert_device(
-                loc,
-                ru,
+            _upsert_device(loc, ru,
                 dns_name=cable.get(f'{prefix}_dns', ''),
-                model=cable.get(f'{prefix}_model', ''),
-            )
+                model=cable.get(f'{prefix}_model', ''))
+
+        if a_in and cable.get('a_optic'):
+            optic_counts[cable['a_optic']] += 1
+            optic_locations.append({'location': a_loc, 'port': cable.get('a_port', ''), 'optic': cable['a_optic']})
+        if z_in and cable.get('z_optic'):
+            optic_counts[cable['z_optic']] += 1
+            optic_locations.append({'location': z_loc, 'port': cable.get('z_port', ''), 'optic': cable['z_optic']})
+
+    # -- Split internal vs cab-to-cab --
+    internal   = [c for c in rack_cables if c['a_in_rack'] and c['z_in_rack']]
+    cab_to_cab = [c for c in rack_cables if not (c['a_in_rack'] and c['z_in_rack'])]
 
     # Supplement cable-derived devices with SITE-HOSTS records so racks with
     # sparse or one-sided cabling still show their full device list.
@@ -446,30 +455,6 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
             device['status'] = derived_status
         elif not device.get('status'):
             device['status'] = 'Listed'
-
-    # -- Optic summary for this rack's ports --
-    # Use a full two-sided scan of ALL cables so that optics on Z-side ports
-    # are captured even when the cable's A-side belongs to a different rack
-    # (those cables are excluded from rack_cables to avoid duplicate cable maps).
-    optic_counts = defaultdict(int)
-    optic_locations = []
-    for cable in cables_raw:
-        a_in = _loc_in_rack(cable.get('a_loc', ''), room_filter, rack_filter)
-        z_in = _loc_in_rack(cable.get('z_loc', ''), room_filter, rack_filter)
-        if a_in and cable.get('a_optic'):
-            optic_counts[cable['a_optic']] += 1
-            optic_locations.append({
-                'location': cable.get('a_loc', ''),
-                'port':     cable.get('a_port', ''),
-                'optic':    cable['a_optic'],
-            })
-        if z_in and cable.get('z_optic'):
-            optic_counts[cable['z_optic']] += 1
-            optic_locations.append({
-                'location': cable.get('z_loc', ''),
-                'port':     cable.get('z_port', ''),
-                'optic':    cable['z_optic'],
-            })
 
     # Sort by RU then port (natural sort so port2 < port10 < port11)
     optic_locations.sort(key=lambda x: (_ru_sort(_parse_loc(x['location'])[2]), _natural_key(x['port'])))
@@ -525,9 +510,11 @@ def process_room(cutsheet_path, room_input):
     room_filter = room_input.strip().lower()
 
     wb_cut = openpyxl.load_workbook(cutsheet_path, read_only=True, data_only=True)
-    cut_tab = _find_cutsheet_tab(wb_cut) or 'CUTSHEET'
-    cables_raw = _read_sheet(wb_cut, cut_tab, CUTSHEET_COLS)
-    wb_cut.close()
+    try:
+        cut_tab = _find_cutsheet_tab(wb_cut) or 'CUTSHEET'
+        cables_raw = _read_sheet(wb_cut, cut_tab, CUTSHEET_COLS)
+    finally:
+        wb_cut.close()
 
     room_cables = []
     for cable in cables_raw:
@@ -584,9 +571,11 @@ def generate_layout_workbook(cutsheet_path, template_path, room_input):
 
     # Load all cable data
     wb_cut = openpyxl.load_workbook(cutsheet_path, read_only=True, data_only=True)
-    cut_tab = _find_cutsheet_tab(wb_cut) or 'CUTSHEET'
-    cables_raw = _read_sheet(wb_cut, cut_tab, CUTSHEET_COLS)
-    wb_cut.close()
+    try:
+        cut_tab = _find_cutsheet_tab(wb_cut) or 'CUTSHEET'
+        cables_raw = _read_sheet(wb_cut, cut_tab, CUTSHEET_COLS)
+    finally:
+        wb_cut.close()
 
     # OVERHEAD rack→cab_type map
     rack_to_cab = _overhead_rack_to_cab_type(cutsheet_path)
@@ -605,6 +594,7 @@ def generate_layout_workbook(cutsheet_path, template_path, room_input):
                 except ValueError:
                     pass
 
+    wb_tpl = openpyxl.load_workbook(template_path, read_only=True, data_only=True) if has_template else None
     for cab_type in sorted(cab_racks.keys()):
         racks_of_type = cab_racks[cab_type]
         ws = wb_out.create_sheet(title=cab_type[:31])
@@ -624,7 +614,7 @@ def generate_layout_workbook(cutsheet_path, template_path, room_input):
         row += 1  # blank spacer
 
         if has_template:
-            elevation = _lookup_elevation(template_path, cab_type)
+            elevation = _lookup_elevation(wb_tpl, cab_type)
 
             # RU values present in cable data for racks of this type
             cabled_rus = set()
@@ -701,6 +691,8 @@ def generate_layout_workbook(cutsheet_path, template_path, room_input):
             max_len = max((len(str(cell.value)) for cell in col if cell.value), default=10)
             ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 50)
 
+    if wb_tpl:
+        wb_tpl.close()
     buf = io.BytesIO()
     wb_out.save(buf)
     buf.seek(0)

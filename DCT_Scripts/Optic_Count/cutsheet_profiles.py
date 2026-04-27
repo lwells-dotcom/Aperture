@@ -15,6 +15,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from cutsheet_preprocessor import (
+    STATUS_MAP,
+    COMPLETE, NOT_TERMINATED, NOT_RUN, ADDITION,
+    HUMAN_VERIFIED, LLDP_PASSED, LLDP_FAILED, IN_PROGRESS, PENDING,
+)
 
 log = logging.getLogger(__name__)
 
@@ -84,52 +89,27 @@ class Canon:
 
 
 # ---------------------------------------------------------------------------
-# Status normalization map
+# Status normalization map — derived from STATUS_MAP (single source of truth).
+# Maps lowercased raw status strings to mixed-case display strings used for
+# Postgres ingest.  SECTION_HEADER / BLANK / UNKNOWN entries are excluded.
 # ---------------------------------------------------------------------------
 
+_ENUM_TO_DISPLAY: Dict[str, str] = {
+    COMPLETE:       "Cable Is Ran Complete",
+    NOT_TERMINATED: "Cable Is Ran Not Terminated",
+    NOT_RUN:        "Cable Not Run",
+    ADDITION:       "Addition",
+    HUMAN_VERIFIED: "Human Verified",
+    LLDP_PASSED:    "LLDP Passed",
+    LLDP_FAILED:    "LLDP Failed",
+    IN_PROGRESS:    "In Progress",
+    PENDING:        "Pending",
+}
+
 STATUS_NORMALIZATION: Dict[str, str] = {
-    # LLDP variants (including double-space after colon seen in real cutsheets)
-    "lldp: passed": "LLDP Passed",
-    "lldp:  passed": "LLDP Passed",
-    "lldp passed": "LLDP Passed",
-    "lldp:passed": "LLDP Passed",
-    "lldp - passed": "LLDP Passed",
-    "lldp: failed": "LLDP Failed",
-    "lldp:  failed": "LLDP Failed",
-    "lldp failed": "LLDP Failed",
-    "lldp:failed": "LLDP Failed",
-    "lldp - failed": "LLDP Failed",
-    # Cable status variants
-    "cable is ran: complete": "Cable Is Ran Complete",
-    "cable is ran complete": "Cable Is Ran Complete",
-    "cable is ran:complete": "Cable Is Ran Complete",
-    "cable is ran - complete": "Cable Is Ran Complete",
-    "cable ran complete": "Cable Is Ran Complete",
-    "cable complete": "Cable Is Ran Complete",
-    "cable is ran: not terminated": "Cable Is Ran Not Terminated",
-    "cable is ran not terminated": "Cable Is Ran Not Terminated",
-    "cable is ran:not terminated": "Cable Is Ran Not Terminated",
-    "cable is ran - not terminated": "Cable Is Ran Not Terminated",
-    "not terminated": "Cable Is Ran Not Terminated",
-    "cable not run": "Cable Not Run",
-    "cable not ran": "Cable Not Run",
-    "no cable": "Cable Not Run",
-    # Human verification
-    "human verified": "Human Verified",
-    "human: verified": "Human Verified",
-    "manually verified": "Human Verified",
-    # Priority / pre-run variants (seen in Ellendale)
-    "cable not run: priority": "Cable Not Run",
-    "cable not run:priority": "Cable Not Run",
-    "cable not run - priority": "Cable Not Run",
-    # Addition / labeling variants (seen in Ellendale)
-    "addition": "Addition",
-    "no label & not yet run": "Cable Not Run",
-    "no label and not yet run": "Cable Not Run",
-    # Misc
-    "complete": "Cable Is Ran Complete",
-    "in progress": "In Progress",
-    "pending": "Pending",
+    k.lower(): _ENUM_TO_DISPLAY[v]
+    for k, v in STATUS_MAP.items()
+    if v in _ENUM_TO_DISPLAY
 }
 
 
@@ -482,6 +462,9 @@ def apply_profile(df: pd.DataFrame, profile: CutsheetProfile, sheet_type: str = 
             if source_col in df.columns and primary_col in df.columns:
                 p = df[primary_col].fillna("").astype(str).str.strip()
                 s = df[source_col].fillna("").astype(str).str.strip()
+                empty_primary = (p == "")
+                if empty_primary.any():
+                    df.loc[empty_primary, primary_col] = df.loc[empty_primary, source_col]
                 both_filled = (p != "") & (s != "")
                 conflicts = both_filled & (p != s)
                 n_conflicts = conflicts.sum()

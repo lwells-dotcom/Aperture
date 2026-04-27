@@ -55,10 +55,10 @@ SOX_ALWAYS_ON = os.getenv("SOX_ALWAYS_ON", "0").strip() == "1"
 
 
 def _require_token_secret():
-    """Raise at call time (not import time) if the secret is missing."""
     if not TOKEN_SECRET:
         raise RuntimeError("DEMO_TOKEN_SECRET must be set in .env (use a 32-byte hex string)")
 
+_require_token_secret()
 _SOX_SECTION_CACHE = None
 
 
