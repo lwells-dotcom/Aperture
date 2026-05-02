@@ -114,13 +114,17 @@ def _build_location_pattern(location: str) -> Optional[str]:
     m = re.fullmatch(r"([a-z]{1,4}\d+):(\d{1,4})", loc)
     if m:
         hall, rack = m.groups()
-        return f"{_escape_ilike(hall)}%:{_escape_ilike(rack)}:%"
+        # Zero-pad rack to 3 digits: "dh4:66" → matches "dh4:066:10"
+        # Anchor hall with trailing colon so "dh4" won't match "dh40", "dh401", etc.
+        return f"{_escape_ilike(hall)}:{_escape_ilike(rack.zfill(3))}:%"
 
     if re.fullmatch(r"[a-z]{1,4}\d+", loc):
-        return f"{_escape_ilike(loc)}%:%"
+        # Anchor hall with trailing colon: "dh4" matches "dh4:*" but not "dh40:*"
+        return f"{_escape_ilike(loc)}:%"
 
     if re.fullmatch(r"\d{1,4}", loc):
-        return None
+        # Zero-pad and search across all data halls: "66" → "%:066:%"
+        return f"%:{_escape_ilike(loc.zfill(3))}:%"
 
     return f"%{_escape_ilike(loc)}%"
 
@@ -256,30 +260,43 @@ def execute_query(qtype: str, params: Dict[str, Any]) -> Tuple[List[Dict], float
 def _fmt_model_search(rows: List[Dict], question: str, lines: List[str]) -> None:
     _LIST_CAP = 20
     _status_filters, status_label = ext.extract_model_status_filter(question)
+    _model = ext.extract_model(question)
+    _data_hall = ext.extract_data_hall(question)
+    _location = ext.extract_location(question)
+    if _model:
+        lines.append(f"  Model filter: {_model}")
+    if _data_hall:
+        lines.append(f"  Data hall filter: {_data_hall}")
+    if _location and _location.lower() != _data_hall.lower():
+        lines.append(f"  Location filter: {_location}")
     if status_label:
         lines.append(f"  Status filter: {status_label}")
     if rows and "matching_device_locations" in rows[0]:
         row = rows[0]
+        unique_names = row.get('matching_device_names', 0)
+        unique_locs = row.get('matching_device_locations', 0)
+        total_rows = row.get('matching_cutsheet_rows', 0)
+        a_rows = row.get('a_side_rows', 0)
+        z_rows = row.get('z_side_rows', 0)
+        lines.append(f"  ANSWER: {unique_names} unique devices across {unique_locs} locations match this pattern")
         lines.append(
-            f"  Unique device locations matching pattern: {row.get('matching_device_locations', 0)}"
-        )
-        lines.append(
-            f"  Unique hostnames matching filter: {row.get('matching_device_names', 0)}"
-        )
-        lines.append(
-            f"  Matching cutsheet rows: {row.get('matching_cutsheet_rows', 0)}"
-            f"  |  A-side rows: {row.get('a_side_rows', 0)}"
-            f"  |  Z-side rows: {row.get('z_side_rows', 0)}"
+            f"  (Detail: {total_rows} total cutsheet connection rows"
+            f" — A-side: {a_rows}, Z-side: {z_rows}."
+            f" Each device has many ports so connection rows >> device count.)"
         )
         return
     if rows and "cutsheet_occurrences" in rows[0]:
         row = rows[0]
-        lines.append(f"  Total cutsheet appearances matching pattern: {row.get('cutsheet_occurrences', 0)}")
+        unique = row.get('cutsheet_unique_devices', 0)
+        total = row.get('cutsheet_occurrences', 0)
+        a_side = row.get('a_side_occurrences', 0)
+        z_side = row.get('z_side_occurrences', 0)
+        lines.append(f"  ANSWER: {unique} unique physical devices match this pattern")
         lines.append(
-            f"  A-side appearances: {row.get('a_side_occurrences', 0)}"
-            f"  |  Z-side appearances: {row.get('z_side_occurrences', 0)}"
+            f"  (Detail: {total} total cutsheet connection rows"
+            f" — A-side: {a_side}, Z-side: {z_side}."
+            f" Each device has many ports so connection rows >> device count.)"
         )
-        lines.append(f"  Unique devices represented in cutsheet: {row.get('cutsheet_unique_devices', 0)}")
         return
     if rows and "total_unique_devices" in rows[0]:
         row = rows[0]
@@ -387,6 +404,11 @@ def _fmt_optic_count(rows: List[Dict], question: str, lines: List[str]) -> None:
         lines.append(f"  Filter: optic type contains '{optic_filter}'")
     if section_filter:
         lines.append(f"  Filter: section contains '{section_filter}'")
+    lines.append(
+        "  Note: A_count / Z_count are deduplicated physical optics per side "
+        "(breakout fan-out rows share one port key and count once). "
+        "Upload \"Count\" uses raw non-empty A/Z cells and is usually higher."
+    )
     for r in rows:
         cable_count = r.get("cable_count") or 0
         a_count = r.get("a_count") or 0
@@ -493,7 +515,9 @@ def _fmt_rack_summary(rows: List[Dict], question: str, lines: List[str]) -> None
         models = r.get("models") or "?"
         optics = r.get("optics") or ""
         optic_count = r.get("optic_count", 0)
-        optic_tag = f" | {optic_count} optic(s): {optics}" if optics else " | 0 optics"
+        optic_breakdown = r.get("optic_breakdown") or ""
+        optic_detail = optic_breakdown if optic_breakdown else optics
+        optic_tag = f" | {optic_count} optic(s): {optic_detail}" if optic_detail else " | 0 optics"
         lines.append(
             f"  {rank} {r['loc_cab_ru']}: {r['connections']} connections, "
             f"{r['devices']} device(s) [{models}]{optic_tag}"

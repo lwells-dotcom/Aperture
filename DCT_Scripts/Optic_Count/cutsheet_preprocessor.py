@@ -226,6 +226,100 @@ SITE_SECTION_HEADERS: Dict[str, Dict[str, bool]] = {
         "TIER-3 TO TIER-2 1 C": True, "TIER-3 TO TIER-2 1 D": True,
         "TIER-3 TO TIER-2 1 E": True,
     },
+    # Orangeburg US-EAST-01A (DH1/DH2/DH3/DH4) — added 2026-04-28 from
+    # MASTER-US-EAST-01A-US-OBG01-ORANGEBURG.xlsx upload.  Most of these
+    # are also caught by _TOPOLOGY_PATTERN, but listed explicitly so the
+    # data is self-documenting and so a future caller passing site_code
+    # gets exact matching rather than relying on the regex.
+    "OBG": {
+        "DATA HALL 1": True, "DATA HALL 2": True, "DATA HALL 3 & 4": True,
+        "OOB-FIREWALL": True, "BACKBONE MGMT": True,
+        "MGMT-CORE": True, "MGMT-DIST": True,
+        "R163 Net + Con": True, "R164 Net + Con": True,
+        "UFM Patch": True, "FBS": True,
+        "RACK 155": True, "RACK 156": True, "RACK 157": True, "RACK 158": True,
+        # GG1 grids: A, B, C, D, F, G — NET / COMP at AGG and DIST tiers
+        "NET-AGG GG1-A": True, "NET-AGG GG1-B": True, "NET-AGG GG1-C": True,
+        "NET-AGG GG1-D": True, "NET-AGG GG1-G": True,
+        "COMP-AGG GG1-A": True, "COMP-AGG GG1-B": True, "COMP-AGG GG1-C": True,
+        "COMP-AGG GG1-D": True, "COMP-AGG GG1-G": True,
+        "NET-DIST GG1-A1": True, "NET-DIST GG1-A2": True,
+        "NET-DIST GG1-A3": True, "NET-DIST GG1-A4": True,
+        "NET-DIST GG1-B1": True,
+        "NET-DIST GG1-C1": True, "NET-DIST GG1-C2": True, "NET-DIST GG1-C3": True,
+        "NET-DIST GG1-D1": True, "NET-DIST GG1-D2": True,
+        "NET-DIST GG1-D3": True, "NET-DIST GG1-D4": True,
+        "NET-DIST GG1-G": True,
+        "COMP-DIST GG1-A1": True, "COMP-DIST GG1-A2": True,
+        "COMP-DIST GG1-A3": True, "COMP-DIST GG1-A4": True,
+        "COMP-DIST GG1-B1": True,
+        "COMP-DIST GG1-C1": True, "COMP-DIST GG1-C2": True, "COMP-DIST GG1-C3": True,
+        "COMP-DIST GG1-D1": True, "COMP-DIST GG1-D2": True,
+        "COMP-DIST GG1-D3": True, "COMP-DIST GG1-D4": True,
+        "COMP-DIST GG1-G": True,
+        # DH1 row markers (row N; row N MGMT + CON variant)
+        **{f"DH1 Row {n}": True for n in range(1, 25)},
+        **{f"DH1 Row {n} MGMT + CON": True for n in range(1, 25)},
+        # DH2 row markers (DH2 ROW N MGMT + CON; DH2 :: ROW-N)
+        **{f"DH2 ROW {n} MGMT + CON": True for n in range(1, 25)},
+        **{f"DH2 :: ROW-{n}": True for n in range(1, 25)},
+        # DH3 row 2/5/6 patterns
+        "DH3 :: GRID-AGG :: POD-DIST": True, "DH3 :: POD-DIST :: INFRA-DIST": True,
+        "DH3 ROW 2 :: NET-01 :: POD-DIST/T2": True,
+        "DH3 ROW 2 :: INFRA-DIST :: INFRA/BMC": True,
+        "DH3 ROW 5:: INFRA-DIST :: INFRA/BMC": True,
+        "DH3 ROW 6:: INFRA-DIST :: INFRA/BMC": True,
+        "DH3 ROW 2 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "DH3 ROW 5 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "DH3 ROW 6 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "DH3 ROW 2 :: BMC :: PS-LOU": True,
+        "DH3 ROW 5 :: BMC :: PS-LOU": True,
+        "DH3 ROW 6 :: BMC :: PS-LOU": True,
+        "DH3 :: ROW 2 :: T0 > NODE": True,
+        "DH3 :: ROW 5 :: T0 > NODE": True,
+        "DH3 :: ROW 6 :: T0 > NODE": True,
+        "DH3 :: ROW 2 :: INFRA/BMC": True,
+        "DH3 :: ROW 5 :: INFRA/BMC": True,
+        "DH3 :: ROW 6 :: INFRA/BMC": True,
+        # DH4 row 1/2/5/6 patterns (lowercase 'dh4' variant)
+        "dh4 :: GRID-AGG :: POD-DIST": True, "dh4 :: POD-DIST :: INFRA-DIST": True,
+        "dh4 ROW 2 :: NET-01 :: POD-DIST/T2": True,
+        "dh4 ROW 1 :: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 2 :: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 5:: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 6:: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 5 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "dh4 ROW 6 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "dh4 ROW 1 :: BMC :: PS-LOU": True,
+        "dh4 ROW 2 :: BMC :: PS-LOU": True,
+        "dh4 ROW 5 :: BMC :: PS-LOU": True,
+        "dh4 ROW 6 :: BMC :: PS-LOU": True,
+        "dh4 :: ROW 1 :: T0 > NODE": True,
+        "dh4 :: ROW 2 :: T0 > NODE": True,
+        "dh4 :: ROW 5 :: T0 > NODE": True,
+        "dh4 :: ROW 6 :: T0 > NODE": True,
+        "dh4 :: ROW 1 :: INFRA/BMC": True,
+        "dh4 :: ROW 2 :: INFRA/BMC": True,
+        "dh4 :: ROW 5 :: INFRA/BMC": True,
+        "dh4 :: ROW 6 :: INFRA/BMC": True,
+        # TIER patterns — Grid F and Grid G additions
+        "TIER 4 to TIER 3 GG1": True,
+        "TIER 3 to TIER 2 GG1-A": True, "TIER 3 to TIER 2 GG1-B": True,
+        "TIER 3 to TIER 2 GG1-C": True, "TIER 3 to TIER 2 GG1-D": True,
+        "TIER 2 to TIER 1 GG1-D1": True,
+        "TIER 1 to TIER 0 GG1-D1": True, "TIER 1 to TIER 0 GG1-D2": True,
+        "TIER 1 to TIER 0 GG1-D3": True, "TIER 1 to TIER 0 GG1-D4": True,
+        "TIER-2 to TIER-1 GG1 A": True, "TIER-2 to TIER-1 GG1 B": True,
+        "TIER-2 to TIER-1 GG1 C": True, "TIER-2 to TIER-1 GG1 G": True,
+        "TIER-1 to TIER-0 GG1 a1": True, "TIER-1 to TIER-0 GG1 a2": True,
+        "TIER-1 to TIER-0 GG1 A3": True, "TIER-1 to TIER-0 GG1 A4": True,
+        "TIER-1 to TIER-0 GG1 B1": True,
+        "TIER-1 to TIER-0 GG1 c1": True, "TIER-1 to TIER-0 GG1 c2": True,
+        "TIER-1 to TIER-0 GG1 c3": True, "TIER-1 to TIER-0 GG1 G": True,
+        "TIER-3 TO TIER-2 GG1 F": True, "TIER-3 TO TIER-2 GG1 G": True,
+        "TIER-2 TO TIER-1 GG1 E": True, "TIER-2 TO TIER-1 GG1 F": True,
+        "TIER-1 TO TIER-0 GG1 E1": True, "TIER-1 TO TIER-0 GG1 F1": True,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -267,7 +361,10 @@ _TOPOLOGY_PATTERN = _re.compile(
     r"(?:"
     r"TIER|GRID|CON-\d|NET-\d|RACK\s*\d|DH\d|SPINE|LEAF|FDP|CDU|PDU|TOR|"
     r"FBS|MGMT|DIST|AGG|ROCE|INFRA|BACKBONE|STOR|POD-DIST|OOB|NVLINK|GPU|"
-    r"OVERFLOW|LOCODE"
+    r"OVERFLOW|LOCODE|"
+    # Orangeburg additions (2026-04-28): "DATA HALL N" headers, racks
+    # numbered as R163/R164 (rather than RACK 163), and UFM Patch panel.
+    r"DATA\s*HALL|R\d{2,4}\s+(?:Net|MGMT|CON)|UFM"
     r")",
 )
 
@@ -486,7 +583,7 @@ def preprocess_upload(filepath: str, sheet_name: Optional[str] = None) -> Dict[s
 
     log.info("Preprocessing %s (tab: %s)", path.name, tab)
 
-    df = pd.read_excel(filepath, sheet_name=tab, engine="openpyxl")
+    df = pd.read_excel(filepath, sheet_name=tab, engine="calamine")
 
     # R37: Verify the tab has the columns we need before processing
     _verify_cutsheet_schema(df, tab)
@@ -533,6 +630,13 @@ def format_optic_count_text(optic_counts: Dict[str, Any]) -> str:
     lines.append(f"Total A-side optics: {totals['a_side']}")
     lines.append(f"Total Z-side optics: {totals['z_side']}")
     lines.append(f"Grand total optics:  {totals['grand_total']}")
+    lines.append("")
+    lines.append(
+        "Note: These totals count every non-empty A-OPTIC / Z-OPTIC cell in the sheet "
+        "(breakout fan-out can repeat the same optic across rows). Atlas Q&A / Postgres "
+        "optic_count collapses breakout rows to one physical optic per port key, so "
+        "Q&A side totals are often lower than the numbers above."
+    )
 
     return "\n".join(lines)
 
@@ -585,7 +689,7 @@ def _find_cutsheet_tab(filepath: str) -> str:
     2. CUTSHEET (standard name)
     3. First tab that isn't a skip-pattern match
     """
-    xl = pd.ExcelFile(filepath, engine="openpyxl")
+    xl = pd.ExcelFile(filepath, engine="calamine")
     names = xl.sheet_names
     xl.close()
 
