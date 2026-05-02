@@ -100,6 +100,7 @@ def summary():
         FROM netbox_devices
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND name IS NOT NULL AND name <> ''
         GROUP BY status
     """
     sql_recent = """
@@ -137,9 +138,10 @@ def sites_list():
     sql = """
         SELECT site AS slug,
                COUNT(DISTINCT name) AS device_count,
-               COUNT(DISTINCT location_slug) AS location_count
+               COUNT(DISTINCT NULLIF(TRIM(location_slug), '')) AS location_count
         FROM netbox_devices
         WHERE snapshot_id = %s
+          AND name IS NOT NULL AND name <> ''
         GROUP BY site
         ORDER BY site
     """
@@ -160,10 +162,11 @@ def by_dh():
     site = _site_filter()
 
     sql_dev = """
-        SELECT location_slug AS dh, site, COUNT(*) AS device_count
+        SELECT location_slug AS dh, site, COUNT(DISTINCT name) AS device_count
         FROM netbox_devices
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND name IS NOT NULL AND name <> ''
         GROUP BY location_slug, site
         ORDER BY site, location_slug
     """
@@ -172,6 +175,7 @@ def by_dh():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY location_slug, site
         ORDER BY site, location_slug
     """
@@ -180,6 +184,7 @@ def by_dh():
         FROM netbox_devices
         WHERE snapshot_id = %s AND rack IS NOT NULL AND rack <> ''
           AND (%s IS NULL OR site = %s)
+          AND name IS NOT NULL AND name <> ''
         GROUP BY location_slug, site
     """
 
@@ -256,19 +261,21 @@ def devices_breakdown():
     site = _site_filter()
 
     sql_overall = """
-        SELECT model, COUNT(*) AS n
+        SELECT model, COUNT(DISTINCT name) AS n
         FROM netbox_devices
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND name IS NOT NULL AND name <> ''
         GROUP BY model
         ORDER BY n DESC
         LIMIT 20
     """
     sql_per_dh = """
-        SELECT location_slug AS dh, model, COUNT(*) AS n
+        SELECT location_slug AS dh, model, COUNT(DISTINCT name) AS n
         FROM netbox_devices
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND name IS NOT NULL AND name <> ''
         GROUP BY location_slug, model
         ORDER BY location_slug, n DESC
     """
@@ -311,6 +318,7 @@ def optics_breakdown():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY type_label, type_category
         ORDER BY n DESC
         LIMIT 25
@@ -320,6 +328,7 @@ def optics_breakdown():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY location_slug, type_label
         ORDER BY location_slug, n DESC
     """
@@ -328,6 +337,7 @@ def optics_breakdown():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY type_category
         ORDER BY n DESC
     """
@@ -338,6 +348,7 @@ def optics_breakdown():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
     """
     # by_rack: per-rack optic and port counts for the rack density table
     sql_by_rack = f"""
@@ -347,6 +358,7 @@ def optics_breakdown():
         FROM netbox_interfaces
         WHERE snapshot_id = %s AND rack IS NOT NULL AND rack != ''
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY location_slug, rack
         ORDER BY location_slug, rack
     """
@@ -413,6 +425,7 @@ def optics_inventory():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY location_slug, site
         ORDER BY location_slug
     """
@@ -422,6 +435,7 @@ def optics_inventory():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY location_slug, type_label, type_category
         ORDER BY location_slug, n DESC
     """
@@ -430,6 +444,7 @@ def optics_inventory():
         FROM netbox_interfaces
         WHERE snapshot_id = %s
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY type_label, type_category
         ORDER BY n DESC
     """
@@ -440,6 +455,7 @@ def optics_inventory():
         FROM netbox_interfaces
         WHERE snapshot_id = %s AND rack IS NOT NULL AND rack != ''
           AND (%s IS NULL OR site = %s)
+          AND device_name IS NOT NULL AND device_name <> ''
         GROUP BY location_slug, rack
         ORDER BY location_slug, rack
     """
