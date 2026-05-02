@@ -15,6 +15,7 @@ import demo_auth_ai
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 UPLOAD_DIR = Path(os.getenv("DEMO_UPLOAD_DIR", "./uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 

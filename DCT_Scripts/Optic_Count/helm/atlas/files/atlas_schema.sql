@@ -77,6 +77,12 @@ ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS status_normalized  TEX
 -- H8: device role columns populated via JOIN to host_inventory after load
 ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS a_role             TEXT;
 ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS z_role             TEXT;
+ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS a_breakout_loc     TEXT;
+ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS a_breakout_port    TEXT;
+ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS z_breakout_loc     TEXT;
+ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS z_breakout_port    TEXT;
+ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS a_patch_panel      TEXT;
+ALTER TABLE cutsheet_connections ADD COLUMN IF NOT EXISTS z_patch_panel      TEXT;
 -- H8: partial indexes (most rows have no role; skip NULLs to keep index small)
 CREATE INDEX IF NOT EXISTS idx_cc_a_role ON cutsheet_connections(a_role) WHERE a_role IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_cc_z_role ON cutsheet_connections(z_role) WHERE z_role IS NOT NULL;
@@ -154,6 +160,14 @@ ALTER TABLE host_inventory ADD COLUMN IF NOT EXISTS row_type TEXT;
 CREATE INDEX IF NOT EXISTS idx_hi_site ON host_inventory(site_id);
 CREATE INDEX IF NOT EXISTS idx_hi_hostname ON host_inventory(hostname);
 CREATE INDEX IF NOT EXISTS idx_hi_model ON host_inventory(model);
+-- W14: Missing indexes for cable_type, location, and role queries
+CREATE INDEX IF NOT EXISTS idx_cc_cable_type ON cutsheet_connections(cable_type)
+    WHERE cable_type IS NOT NULL AND cable_type != '';
+CREATE INDEX IF NOT EXISTS idx_cc_a_loc ON cutsheet_connections(a_loc_cab_ru);
+CREATE INDEX IF NOT EXISTS idx_cc_z_loc ON cutsheet_connections(z_loc_cab_ru);
+CREATE INDEX IF NOT EXISTS idx_hi_role ON host_inventory(role)
+    WHERE role IS NOT NULL AND role != '';
+CREATE INDEX IF NOT EXISTS idx_bd_status ON burndown_connections(status);
 
 -- ========================================================================
 -- Materialized views for common query patterns
@@ -237,7 +251,7 @@ SELECT
     site_id,
     site_code,
     device_name,
-    MODE() WITHIN GROUP (ORDER BY model) FILTER (WHERE model IS NOT NULL AND model != '' AND model != 'nan') AS model,
+    MAX(model) FILTER (WHERE model IS NOT NULL AND model != '' AND model != 'nan') AS model,
     COUNT(*) AS connection_count,
     COUNT(DISTINCT port) AS port_count
 FROM (
@@ -288,3 +302,25 @@ BEGIN
     RETURN last_upload > last_refresh;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Migration: multi-site netbox snapshot tracking (no-op when netbox_snapshots absent)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'netbox_snapshots'
+    ) THEN
+        ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS site_count   INTEGER DEFAULT 0;
+        ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS sites_failed INTEGER DEFAULT 0;
+        ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS sites_json   JSONB;
+        EXECUTE $q$
+            CREATE OR REPLACE VIEW netbox_latest_snapshot AS
+            SELECT id, started_at, finished_at, status,
+                   device_count, interface_count, optic_count,
+                   site_count, sites_failed, duration_ms
+            FROM netbox_snapshots
+            WHERE status = 'ok'
+            ORDER BY finished_at DESC LIMIT 1
+        $q$;
+    END IF;
+END $$;

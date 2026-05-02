@@ -55,10 +55,10 @@ SOX_ALWAYS_ON = os.getenv("SOX_ALWAYS_ON", "0").strip() == "1"
 
 
 def _require_token_secret():
-    """Raise at call time (not import time) if the secret is missing."""
     if not TOKEN_SECRET:
         raise RuntimeError("DEMO_TOKEN_SECRET must be set in .env (use a 32-byte hex string)")
 
+_require_token_secret()
 _SOX_SECTION_CACHE = None
 
 
@@ -491,6 +491,8 @@ def _build_grounded_messages(question: str, sheet_context: Dict[str, Any]) -> Li
             meta_parts.append(f"Query type: {trimmed['question_type']}")
         if trimmed.get("confidence"):
             meta_parts.append(f"Confidence: {trimmed['confidence']}")
+        if trimmed.get("site_code"):
+            meta_parts.append(f"Site: {trimmed['site_code']} (all results are scoped to this site)")
         meta_str = "\n".join(meta_parts)
         user_content = (
             f"Question: {question}\n\n"

@@ -1,0 +1,6 @@
+
+# Orchestrator and IDE state (per-developer, never commit)
+.omc/
+.omx/
+.codex/
+.playwright-mcp/

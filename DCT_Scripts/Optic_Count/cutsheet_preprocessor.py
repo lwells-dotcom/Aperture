@@ -113,176 +113,214 @@ STATUS_MAP: Dict[str, str] = {
     # Misc statuses (from cutsheet_profiles.py)
     "in progress": IN_PROGRESS,
     "pending": PENDING,
-    # ── Section headers (from Ellendale STATUS_MAP tab) ──────────────────
-    "BACKBONE BFR": SECTION_HEADER,
-    "BACKBONE MGMT": SECTION_HEADER,
-    "BACKBONE/OPTICAL MGMT": SECTION_HEADER,
-    "CON-01 Grid A Pod 1": SECTION_HEADER,
-    "CON-01 Grid A Pod 2": SECTION_HEADER,
-    "CON-01 Grid A Pod 3": SECTION_HEADER,
-    "CON-01 Grid A Pod 4": SECTION_HEADER,
-    "CON-01 Grid A Rack 230": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 222": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 223": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 224": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 225": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 226": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 227": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 228": SECTION_HEADER,
-    "CON-01 Grid A1 Rack 229": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 232": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 233": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 234": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 235": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 236": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 237": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 238": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 239": SECTION_HEADER,
-    "CON-01 Grid A2 Rack 240": SECTION_HEADER,
-    "CON-01 Grid B Pod 1": SECTION_HEADER,
-    "CON-01 Grid B Rack 50": SECTION_HEADER,
-    "CON-01 Grid B1 Rack 46": SECTION_HEADER,
-    "CON-01 Grid C Rack 67": SECTION_HEADER,
-    "CON-01 Grid C Rack 68": SECTION_HEADER,
-    "CON-01 Grid C Rack 69": SECTION_HEADER,
-    "CON-01 Grid C Rack 70": SECTION_HEADER,
-    "CON-01 Grid C1": SECTION_HEADER,
-    "CON-01 Grid C2": SECTION_HEADER,
-    "CON-01 Grid C3": SECTION_HEADER,
-    "CON-01 Grid D Rack 107": SECTION_HEADER,
-    "CON-01 Grid D Rack 108": SECTION_HEADER,
-    "CON-01 Grid D Rack 109": SECTION_HEADER,
-    "CON-01 Grid D Rack 110": SECTION_HEADER,
-    "CON-01 Grid D1": SECTION_HEADER,
-    "CON-01 Grid D2": SECTION_HEADER,
-    "CON-01 Grid D3": SECTION_HEADER,
-    "CON-01 Grid E Pod 1": SECTION_HEADER,
-    "CON-01 Grid E Rack 10": SECTION_HEADER,
-    "CON-01 Grid E1 Rack 2": SECTION_HEADER,
-    "CON-01 Grid E1 Rack 3": SECTION_HEADER,
-    "CON-01 Grid E1 Rack 4": SECTION_HEADER,
-    "CON-01 Grid E1 Rack 5": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 222": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 223": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 224": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 225": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 226": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 227": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 228": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A1 Rack 229": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 232": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 233": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 234": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 235": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 236": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 237": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 238": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 239": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid A2 Rack 240": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid B1 Rack 46": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid E1 Rack 2": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid E1 Rack 3": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid E1 Rack 4": SECTION_HEADER,
-    "Compute Mgmt In-Row Grid E1 Rack 5": SECTION_HEADER,
-    "DH202 :: <<<<< A1": SECTION_HEADER,
-    "DH202 :: <<<<< A2": SECTION_HEADER,
-    "DH202 :: <<<<< B1": SECTION_HEADER,
-    "DH202 :: A3": SECTION_HEADER,
-    "DH202 :: A4": SECTION_HEADER,
-    "DH202 :: C1": SECTION_HEADER,
-    "DH202 :: C2": SECTION_HEADER,
-    "DH202 :: C3": SECTION_HEADER,
-    "DH202 OVERFLOW T0 ROCE MGMT": SECTION_HEADER,
-    "DH202 T1 ROCE MGMT": SECTION_HEADER,
-    "DH202 T2 ROCE MGMT": SECTION_HEADER,
-    "DH204 :: D1": SECTION_HEADER,
-    "DH204 :: D2": SECTION_HEADER,
-    "DH204 :: D3": SECTION_HEADER,
-    "DH204 :: E1": SECTION_HEADER,
-    "DH204 OVERFLOW T0 ROCE MGMT": SECTION_HEADER,
-    "DH204 T1 ROCE MGMT": SECTION_HEADER,
-    "DH204 T2 ROCE MGMT": SECTION_HEADER,
-    "FBS": SECTION_HEADER,
-    "GRID-AGG-A": SECTION_HEADER,
-    "GRID-AGG-B": SECTION_HEADER,
-    "GRID-AGG-C": SECTION_HEADER,
-    "GRID-AGG-D": SECTION_HEADER,
-    "GRID-AGG-E": SECTION_HEADER,
-    "INFRA-DIST-A": SECTION_HEADER,
-    "INFRA-DIST-B": SECTION_HEADER,
-    "INFRA-DIST-C": SECTION_HEADER,
-    "INFRA-DIST-D": SECTION_HEADER,
-    "INFRA-DIST-E": SECTION_HEADER,
-    "MGMT-CORE": SECTION_HEADER,
-    "MGMT-DIST": SECTION_HEADER,
-    "NET-01 Grid A Pod 1": SECTION_HEADER,
-    "NET-01 Grid A Pod 2": SECTION_HEADER,
-    "NET-01 Grid A Rack 230": SECTION_HEADER,
-    "NET-01 Grid B Pod 1": SECTION_HEADER,
-    "NET-01 Grid B Rack 50": SECTION_HEADER,
-    "NET-01 Grid C Rack 67": SECTION_HEADER,
-    "NET-01 Grid C Rack 68": SECTION_HEADER,
-    "NET-01 Grid C Rack 69": SECTION_HEADER,
-    "NET-01 Grid C Rack 70": SECTION_HEADER,
-    "NET-01 Grid D Rack 107": SECTION_HEADER,
-    "NET-01 Grid D Rack 108": SECTION_HEADER,
-    "NET-01 Grid D Rack 109": SECTION_HEADER,
-    "NET-01 Grid D Rack 110": SECTION_HEADER,
-    "NET-01 Grid E Pod 1": SECTION_HEADER,
-    "NET-01 Grid E Rack 10": SECTION_HEADER,
-    # "No Label & Not Yet Run" is a real cable status (NOT_RUN), not a header.
-    # Handled in the fuzzy variants block above.
-    "OOB-FW": SECTION_HEADER,
-    "POD-DIST-C 1": SECTION_HEADER,
-    "POD-DIST-C 2": SECTION_HEADER,
-    "POD-DIST-C 3": SECTION_HEADER,
-    "POD-DIST-D 1": SECTION_HEADER,
-    "POD-DIST-D 2": SECTION_HEADER,
-    "POD-DIST-D 3": SECTION_HEADER,
-    "RACK 43 NET + CON": SECTION_HEADER,
-    "RACK 44 NET + CON": SECTION_HEADER,
-    "RACK 51 NET + CON": SECTION_HEADER,
-    "RACK 52 NET + CON": SECTION_HEADER,
-    "RACK 53 NET + CON": SECTION_HEADER,
-    "RACK 54 NET + CON": SECTION_HEADER,
-    "RACK 55 NET + CON": SECTION_HEADER,
-    "RACK 56 NET + CON": SECTION_HEADER,
-    "RACK 57 NET + CON": SECTION_HEADER,
-    "RACK 58 NET + CON": SECTION_HEADER,
-    "RACK 59 NET + CON": SECTION_HEADER,
-    "ROCE INFRA AGGS DH202": SECTION_HEADER,
-    "ROCE INFRA AGGS DH204": SECTION_HEADER,
-    "STOR INFRA-DIST A3": SECTION_HEADER,
-    "STOR NET-01 Grid A Pod 3": SECTION_HEADER,
-    "STOR NET-01 Grid A Pod 4": SECTION_HEADER,
-    "TIER-1 TO TIER-0 A1": SECTION_HEADER,
-    "TIER-1 TO TIER-0 A2": SECTION_HEADER,
-    "TIER-1 TO TIER-0 A3 (T0 MULTIPLIER X3)": SECTION_HEADER,
-    "TIER-1 TO TIER-0 A4 (T0 MULTIPLIER X3)": SECTION_HEADER,
-    "TIER-1 TO TIER-0 B1": SECTION_HEADER,
-    "TIER-1 TO TIER-0 C1": SECTION_HEADER,
-    "TIER-1 TO TIER-0 C2": SECTION_HEADER,
-    "TIER-1 TO TIER-0 C3": SECTION_HEADER,
-    "TIER-1 TO TIER-0 D1": SECTION_HEADER,
-    "TIER-1 TO TIER-0 D2": SECTION_HEADER,
-    "TIER-1 TO TIER-0 D3": SECTION_HEADER,
-    "TIER-1 TO TIER-0 E1 (T0 MULTIPLIER X1)": SECTION_HEADER,
-    "TIER-2 TO TIER-1 A": SECTION_HEADER,
-    "TIER-2 TO TIER-1 B": SECTION_HEADER,
-    "TIER-2 TO TIER-1 C": SECTION_HEADER,
-    "TIER-2 TO TIER-1 D": SECTION_HEADER,
-    "TIER-2 TO TIER-1 GRID:E (T1 MULTIPLIER X2)": SECTION_HEADER,
-    "TIER-3 TO TIER-2 1 A": SECTION_HEADER,
-    "TIER-3 TO TIER-2 1 B": SECTION_HEADER,
-    "TIER-3 TO TIER-2 1 C": SECTION_HEADER,
-    "TIER-3 TO TIER-2 1 D": SECTION_HEADER,
-    "TIER-3 TO TIER-2 1 E": SECTION_HEADER,
-    # "a" and "b" were in the original Claude in Excel output but are garbage
-    # entries (test artifacts). Removed to avoid stripping real data rows.
 }
 
 # Build a lowercase lookup for case-insensitive fallback
 _STATUS_MAP_LOWER: Dict[str, str] = {k.lower(): v for k, v in STATUS_MAP.items()}
+
+# ---------------------------------------------------------------------------
+# Site-specific section headers — keyed by site code (uppercase).
+# These were previously embedded in STATUS_MAP but are Ellendale-specific.
+# classify_status() checks this dict when STATUS_MAP returns UNKNOWN and a
+# site_code is provided.  The _TOPOLOGY_PATTERN regex remains the universal
+# fallback for sites without an explicit entry here.
+# ---------------------------------------------------------------------------
+
+SITE_SECTION_HEADERS: Dict[str, Dict[str, bool]] = {
+    "ELD": {
+        "BACKBONE BFR": True, "BACKBONE MGMT": True, "BACKBONE/OPTICAL MGMT": True,
+        "CON-01 Grid A Pod 1": True, "CON-01 Grid A Pod 2": True,
+        "CON-01 Grid A Pod 3": True, "CON-01 Grid A Pod 4": True,
+        "CON-01 Grid A Rack 230": True,
+        "CON-01 Grid A1 Rack 222": True, "CON-01 Grid A1 Rack 223": True,
+        "CON-01 Grid A1 Rack 224": True, "CON-01 Grid A1 Rack 225": True,
+        "CON-01 Grid A1 Rack 226": True, "CON-01 Grid A1 Rack 227": True,
+        "CON-01 Grid A1 Rack 228": True, "CON-01 Grid A1 Rack 229": True,
+        "CON-01 Grid A2 Rack 232": True, "CON-01 Grid A2 Rack 233": True,
+        "CON-01 Grid A2 Rack 234": True, "CON-01 Grid A2 Rack 235": True,
+        "CON-01 Grid A2 Rack 236": True, "CON-01 Grid A2 Rack 237": True,
+        "CON-01 Grid A2 Rack 238": True, "CON-01 Grid A2 Rack 239": True,
+        "CON-01 Grid A2 Rack 240": True,
+        "CON-01 Grid B Pod 1": True, "CON-01 Grid B Rack 50": True,
+        "CON-01 Grid B1 Rack 46": True,
+        "CON-01 Grid C Rack 67": True, "CON-01 Grid C Rack 68": True,
+        "CON-01 Grid C Rack 69": True, "CON-01 Grid C Rack 70": True,
+        "CON-01 Grid C1": True, "CON-01 Grid C2": True, "CON-01 Grid C3": True,
+        "CON-01 Grid D Rack 107": True, "CON-01 Grid D Rack 108": True,
+        "CON-01 Grid D Rack 109": True, "CON-01 Grid D Rack 110": True,
+        "CON-01 Grid D1": True, "CON-01 Grid D2": True, "CON-01 Grid D3": True,
+        "CON-01 Grid E Pod 1": True, "CON-01 Grid E Rack 10": True,
+        "CON-01 Grid E1 Rack 2": True, "CON-01 Grid E1 Rack 3": True,
+        "CON-01 Grid E1 Rack 4": True, "CON-01 Grid E1 Rack 5": True,
+        "Compute Mgmt In-Row Grid A1 Rack 222": True,
+        "Compute Mgmt In-Row Grid A1 Rack 223": True,
+        "Compute Mgmt In-Row Grid A1 Rack 224": True,
+        "Compute Mgmt In-Row Grid A1 Rack 225": True,
+        "Compute Mgmt In-Row Grid A1 Rack 226": True,
+        "Compute Mgmt In-Row Grid A1 Rack 227": True,
+        "Compute Mgmt In-Row Grid A1 Rack 228": True,
+        "Compute Mgmt In-Row Grid A1 Rack 229": True,
+        "Compute Mgmt In-Row Grid A2 Rack 232": True,
+        "Compute Mgmt In-Row Grid A2 Rack 233": True,
+        "Compute Mgmt In-Row Grid A2 Rack 234": True,
+        "Compute Mgmt In-Row Grid A2 Rack 235": True,
+        "Compute Mgmt In-Row Grid A2 Rack 236": True,
+        "Compute Mgmt In-Row Grid A2 Rack 237": True,
+        "Compute Mgmt In-Row Grid A2 Rack 238": True,
+        "Compute Mgmt In-Row Grid A2 Rack 239": True,
+        "Compute Mgmt In-Row Grid A2 Rack 240": True,
+        "Compute Mgmt In-Row Grid B1 Rack 46": True,
+        "Compute Mgmt In-Row Grid E1 Rack 2": True,
+        "Compute Mgmt In-Row Grid E1 Rack 3": True,
+        "Compute Mgmt In-Row Grid E1 Rack 4": True,
+        "Compute Mgmt In-Row Grid E1 Rack 5": True,
+        "DH202 :: <<<<< A1": True, "DH202 :: <<<<< A2": True,
+        "DH202 :: <<<<< B1": True,
+        "DH202 :: A3": True, "DH202 :: A4": True,
+        "DH202 :: C1": True, "DH202 :: C2": True, "DH202 :: C3": True,
+        "DH202 OVERFLOW T0 ROCE MGMT": True,
+        "DH202 T1 ROCE MGMT": True, "DH202 T2 ROCE MGMT": True,
+        "DH204 :: D1": True, "DH204 :: D2": True,
+        "DH204 :: D3": True, "DH204 :: E1": True,
+        "DH204 OVERFLOW T0 ROCE MGMT": True,
+        "DH204 T1 ROCE MGMT": True, "DH204 T2 ROCE MGMT": True,
+        "FBS": True,
+        "GRID-AGG-A": True, "GRID-AGG-B": True, "GRID-AGG-C": True,
+        "GRID-AGG-D": True, "GRID-AGG-E": True,
+        "INFRA-DIST-A": True, "INFRA-DIST-B": True, "INFRA-DIST-C": True,
+        "INFRA-DIST-D": True, "INFRA-DIST-E": True,
+        "MGMT-CORE": True, "MGMT-DIST": True,
+        "NET-01 Grid A Pod 1": True, "NET-01 Grid A Pod 2": True,
+        "NET-01 Grid A Rack 230": True,
+        "NET-01 Grid B Pod 1": True, "NET-01 Grid B Rack 50": True,
+        "NET-01 Grid C Rack 67": True, "NET-01 Grid C Rack 68": True,
+        "NET-01 Grid C Rack 69": True, "NET-01 Grid C Rack 70": True,
+        "NET-01 Grid D Rack 107": True, "NET-01 Grid D Rack 108": True,
+        "NET-01 Grid D Rack 109": True, "NET-01 Grid D Rack 110": True,
+        "NET-01 Grid E Pod 1": True, "NET-01 Grid E Rack 10": True,
+        "OOB-FW": True,
+        "POD-DIST-C 1": True, "POD-DIST-C 2": True, "POD-DIST-C 3": True,
+        "POD-DIST-D 1": True, "POD-DIST-D 2": True, "POD-DIST-D 3": True,
+        "RACK 43 NET + CON": True, "RACK 44 NET + CON": True,
+        "RACK 51 NET + CON": True, "RACK 52 NET + CON": True,
+        "RACK 53 NET + CON": True, "RACK 54 NET + CON": True,
+        "RACK 55 NET + CON": True, "RACK 56 NET + CON": True,
+        "RACK 57 NET + CON": True, "RACK 58 NET + CON": True,
+        "RACK 59 NET + CON": True,
+        "ROCE INFRA AGGS DH202": True, "ROCE INFRA AGGS DH204": True,
+        "STOR INFRA-DIST A3": True,
+        "STOR NET-01 Grid A Pod 3": True, "STOR NET-01 Grid A Pod 4": True,
+        "TIER-1 TO TIER-0 A1": True, "TIER-1 TO TIER-0 A2": True,
+        "TIER-1 TO TIER-0 A3 (T0 MULTIPLIER X3)": True,
+        "TIER-1 TO TIER-0 A4 (T0 MULTIPLIER X3)": True,
+        "TIER-1 TO TIER-0 B1": True,
+        "TIER-1 TO TIER-0 C1": True, "TIER-1 TO TIER-0 C2": True,
+        "TIER-1 TO TIER-0 C3": True,
+        "TIER-1 TO TIER-0 D1": True, "TIER-1 TO TIER-0 D2": True,
+        "TIER-1 TO TIER-0 D3": True,
+        "TIER-1 TO TIER-0 E1 (T0 MULTIPLIER X1)": True,
+        "TIER-2 TO TIER-1 A": True, "TIER-2 TO TIER-1 B": True,
+        "TIER-2 TO TIER-1 C": True, "TIER-2 TO TIER-1 D": True,
+        "TIER-2 TO TIER-1 GRID:E (T1 MULTIPLIER X2)": True,
+        "TIER-3 TO TIER-2 1 A": True, "TIER-3 TO TIER-2 1 B": True,
+        "TIER-3 TO TIER-2 1 C": True, "TIER-3 TO TIER-2 1 D": True,
+        "TIER-3 TO TIER-2 1 E": True,
+    },
+    # Orangeburg US-EAST-01A (DH1/DH2/DH3/DH4) — added 2026-04-28 from
+    # MASTER-US-EAST-01A-US-OBG01-ORANGEBURG.xlsx upload.  Most of these
+    # are also caught by _TOPOLOGY_PATTERN, but listed explicitly so the
+    # data is self-documenting and so a future caller passing site_code
+    # gets exact matching rather than relying on the regex.
+    "OBG": {
+        "DATA HALL 1": True, "DATA HALL 2": True, "DATA HALL 3 & 4": True,
+        "OOB-FIREWALL": True, "BACKBONE MGMT": True,
+        "MGMT-CORE": True, "MGMT-DIST": True,
+        "R163 Net + Con": True, "R164 Net + Con": True,
+        "UFM Patch": True, "FBS": True,
+        "RACK 155": True, "RACK 156": True, "RACK 157": True, "RACK 158": True,
+        # GG1 grids: A, B, C, D, F, G — NET / COMP at AGG and DIST tiers
+        "NET-AGG GG1-A": True, "NET-AGG GG1-B": True, "NET-AGG GG1-C": True,
+        "NET-AGG GG1-D": True, "NET-AGG GG1-G": True,
+        "COMP-AGG GG1-A": True, "COMP-AGG GG1-B": True, "COMP-AGG GG1-C": True,
+        "COMP-AGG GG1-D": True, "COMP-AGG GG1-G": True,
+        "NET-DIST GG1-A1": True, "NET-DIST GG1-A2": True,
+        "NET-DIST GG1-A3": True, "NET-DIST GG1-A4": True,
+        "NET-DIST GG1-B1": True,
+        "NET-DIST GG1-C1": True, "NET-DIST GG1-C2": True, "NET-DIST GG1-C3": True,
+        "NET-DIST GG1-D1": True, "NET-DIST GG1-D2": True,
+        "NET-DIST GG1-D3": True, "NET-DIST GG1-D4": True,
+        "NET-DIST GG1-G": True,
+        "COMP-DIST GG1-A1": True, "COMP-DIST GG1-A2": True,
+        "COMP-DIST GG1-A3": True, "COMP-DIST GG1-A4": True,
+        "COMP-DIST GG1-B1": True,
+        "COMP-DIST GG1-C1": True, "COMP-DIST GG1-C2": True, "COMP-DIST GG1-C3": True,
+        "COMP-DIST GG1-D1": True, "COMP-DIST GG1-D2": True,
+        "COMP-DIST GG1-D3": True, "COMP-DIST GG1-D4": True,
+        "COMP-DIST GG1-G": True,
+        # DH1 row markers (row N; row N MGMT + CON variant)
+        **{f"DH1 Row {n}": True for n in range(1, 25)},
+        **{f"DH1 Row {n} MGMT + CON": True for n in range(1, 25)},
+        # DH2 row markers (DH2 ROW N MGMT + CON; DH2 :: ROW-N)
+        **{f"DH2 ROW {n} MGMT + CON": True for n in range(1, 25)},
+        **{f"DH2 :: ROW-{n}": True for n in range(1, 25)},
+        # DH3 row 2/5/6 patterns
+        "DH3 :: GRID-AGG :: POD-DIST": True, "DH3 :: POD-DIST :: INFRA-DIST": True,
+        "DH3 ROW 2 :: NET-01 :: POD-DIST/T2": True,
+        "DH3 ROW 2 :: INFRA-DIST :: INFRA/BMC": True,
+        "DH3 ROW 5:: INFRA-DIST :: INFRA/BMC": True,
+        "DH3 ROW 6:: INFRA-DIST :: INFRA/BMC": True,
+        "DH3 ROW 2 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "DH3 ROW 5 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "DH3 ROW 6 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "DH3 ROW 2 :: BMC :: PS-LOU": True,
+        "DH3 ROW 5 :: BMC :: PS-LOU": True,
+        "DH3 ROW 6 :: BMC :: PS-LOU": True,
+        "DH3 :: ROW 2 :: T0 > NODE": True,
+        "DH3 :: ROW 5 :: T0 > NODE": True,
+        "DH3 :: ROW 6 :: T0 > NODE": True,
+        "DH3 :: ROW 2 :: INFRA/BMC": True,
+        "DH3 :: ROW 5 :: INFRA/BMC": True,
+        "DH3 :: ROW 6 :: INFRA/BMC": True,
+        # DH4 row 1/2/5/6 patterns (lowercase 'dh4' variant)
+        "dh4 :: GRID-AGG :: POD-DIST": True, "dh4 :: POD-DIST :: INFRA-DIST": True,
+        "dh4 ROW 2 :: NET-01 :: POD-DIST/T2": True,
+        "dh4 ROW 1 :: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 2 :: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 5:: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 6:: INFRA-DIST :: INFRA/BMC": True,
+        "dh4 ROW 5 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "dh4 ROW 6 :: NET-01/CON-01 :: EOR/INFRA/BMC": True,
+        "dh4 ROW 1 :: BMC :: PS-LOU": True,
+        "dh4 ROW 2 :: BMC :: PS-LOU": True,
+        "dh4 ROW 5 :: BMC :: PS-LOU": True,
+        "dh4 ROW 6 :: BMC :: PS-LOU": True,
+        "dh4 :: ROW 1 :: T0 > NODE": True,
+        "dh4 :: ROW 2 :: T0 > NODE": True,
+        "dh4 :: ROW 5 :: T0 > NODE": True,
+        "dh4 :: ROW 6 :: T0 > NODE": True,
+        "dh4 :: ROW 1 :: INFRA/BMC": True,
+        "dh4 :: ROW 2 :: INFRA/BMC": True,
+        "dh4 :: ROW 5 :: INFRA/BMC": True,
+        "dh4 :: ROW 6 :: INFRA/BMC": True,
+        # TIER patterns — Grid F and Grid G additions
+        "TIER 4 to TIER 3 GG1": True,
+        "TIER 3 to TIER 2 GG1-A": True, "TIER 3 to TIER 2 GG1-B": True,
+        "TIER 3 to TIER 2 GG1-C": True, "TIER 3 to TIER 2 GG1-D": True,
+        "TIER 2 to TIER 1 GG1-D1": True,
+        "TIER 1 to TIER 0 GG1-D1": True, "TIER 1 to TIER 0 GG1-D2": True,
+        "TIER 1 to TIER 0 GG1-D3": True, "TIER 1 to TIER 0 GG1-D4": True,
+        "TIER-2 to TIER-1 GG1 A": True, "TIER-2 to TIER-1 GG1 B": True,
+        "TIER-2 to TIER-1 GG1 C": True, "TIER-2 to TIER-1 GG1 G": True,
+        "TIER-1 to TIER-0 GG1 a1": True, "TIER-1 to TIER-0 GG1 a2": True,
+        "TIER-1 to TIER-0 GG1 A3": True, "TIER-1 to TIER-0 GG1 A4": True,
+        "TIER-1 to TIER-0 GG1 B1": True,
+        "TIER-1 to TIER-0 GG1 c1": True, "TIER-1 to TIER-0 GG1 c2": True,
+        "TIER-1 to TIER-0 GG1 c3": True, "TIER-1 to TIER-0 GG1 G": True,
+        "TIER-3 TO TIER-2 GG1 F": True, "TIER-3 TO TIER-2 GG1 G": True,
+        "TIER-2 TO TIER-1 GG1 E": True, "TIER-2 TO TIER-1 GG1 F": True,
+        "TIER-1 TO TIER-0 GG1 E1": True, "TIER-1 TO TIER-0 GG1 F1": True,
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Optic column names — these are the raw column names we look for
@@ -323,7 +361,10 @@ _TOPOLOGY_PATTERN = _re.compile(
     r"(?:"
     r"TIER|GRID|CON-\d|NET-\d|RACK\s*\d|DH\d|SPINE|LEAF|FDP|CDU|PDU|TOR|"
     r"FBS|MGMT|DIST|AGG|ROCE|INFRA|BACKBONE|STOR|POD-DIST|OOB|NVLINK|GPU|"
-    r"OVERFLOW|LOCODE"
+    r"OVERFLOW|LOCODE|"
+    # Orangeburg additions (2026-04-28): "DATA HALL N" headers, racks
+    # numbered as R163/R164 (rather than RACK 163), and UFM Patch panel.
+    r"DATA\s*HALL|R\d{2,4}\s+(?:Net|MGMT|CON)|UFM"
     r")",
 )
 
@@ -331,27 +372,31 @@ _TOPOLOGY_PATTERN = _re.compile(
 # Core functions
 # ---------------------------------------------------------------------------
 
-def classify_status(raw_status: str) -> str:
+def classify_status(raw_status: str, site_code: Optional[str] = None) -> str:
     """Map a raw STATUS string to a canonical value.
 
     Resolution order:
     1. Exact match against STATUS_MAP
     2. Case-insensitive match against _STATUS_MAP_LOWER
-    3. Return UNKNOWN (caller decides what to do)
+    3. Site-specific section header lookup via SITE_SECTION_HEADERS (if site_code given)
+    4. Return UNKNOWN (caller decides what to do)
     """
     if not raw_status:
         return BLANK
-    # Exact match first (preserves case-sensitive section header keys)
     if raw_status in STATUS_MAP:
         return STATUS_MAP[raw_status]
-    # Case-insensitive fallback
     lower = raw_status.lower().strip()
     if not lower:
         return BLANK
-    return _STATUS_MAP_LOWER.get(lower, UNKNOWN)
+    result = _STATUS_MAP_LOWER.get(lower, UNKNOWN)
+    if result == UNKNOWN and site_code:
+        site_headers = SITE_SECTION_HEADERS.get(site_code.upper(), {})
+        if raw_status in site_headers:
+            return SECTION_HEADER
+    return result
 
 
-def normalize_cutsheet_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+def normalize_cutsheet_df(df: pd.DataFrame, site_code: Optional[str] = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Normalize a raw cutsheet DataFrame.
 
     Adds STATUS_CANONICAL column, identifies section headers vs real data,
@@ -391,7 +436,7 @@ def normalize_cutsheet_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any
     unique_vals = raw_status.unique()
     val_to_canonical = {}
     for v in unique_vals:
-        val_to_canonical[v] = classify_status(v)
+        val_to_canonical[v] = classify_status(v, site_code=site_code)
 
     result["STATUS_CANONICAL"] = raw_status.map(val_to_canonical)
 
@@ -538,7 +583,7 @@ def preprocess_upload(filepath: str, sheet_name: Optional[str] = None) -> Dict[s
 
     log.info("Preprocessing %s (tab: %s)", path.name, tab)
 
-    df = pd.read_excel(filepath, sheet_name=tab, engine="openpyxl")
+    df = pd.read_excel(filepath, sheet_name=tab, engine="calamine")
 
     # R37: Verify the tab has the columns we need before processing
     _verify_cutsheet_schema(df, tab)
@@ -585,6 +630,13 @@ def format_optic_count_text(optic_counts: Dict[str, Any]) -> str:
     lines.append(f"Total A-side optics: {totals['a_side']}")
     lines.append(f"Total Z-side optics: {totals['z_side']}")
     lines.append(f"Grand total optics:  {totals['grand_total']}")
+    lines.append("")
+    lines.append(
+        "Note: These totals count every non-empty A-OPTIC / Z-OPTIC cell in the sheet "
+        "(breakout fan-out can repeat the same optic across rows). Atlas Q&A / Postgres "
+        "optic_count collapses breakout rows to one physical optic per port key, so "
+        "Q&A side totals are often lower than the numbers above."
+    )
 
     return "\n".join(lines)
 
@@ -596,6 +648,8 @@ def format_optic_count_text(optic_counts: Dict[str, Any]) -> str:
 # Tabs to skip — backup, legend, copy, and other non-data tabs
 _SKIP_TAB_PATTERNS = (
     "legend", "backup", "copy of", "sheet", "overhead",
+    "summary", "status_map", "host_inventory", "burndown",
+    "site-hosts", "device_inventory", "connections", "site hosts", "hosts",
 )
 
 
@@ -635,25 +689,27 @@ def _find_cutsheet_tab(filepath: str) -> str:
     2. CUTSHEET (standard name)
     3. First tab that isn't a skip-pattern match
     """
-    xl = pd.ExcelFile(filepath, engine="openpyxl")
+    xl = pd.ExcelFile(filepath, engine="calamine")
     names = xl.sheet_names
     xl.close()
 
-    # Prefer pre-cleaned tab
+    selected = None
     for name in names:
         if name.upper() == "CUTSHEET_CLEAN":
-            return name
+            selected = name
+            break
+    if selected is None:
+        for name in names:
+            if name.upper() == "CUTSHEET":
+                selected = name
+                break
+    if selected is None:
+        for name in names:
+            if not any(pat in name.lower() for pat in _SKIP_TAB_PATTERNS):
+                selected = name
+                break
+    if selected is None:
+        selected = names[0]
 
-    # Standard cutsheet tab
-    for name in names:
-        if name.upper() == "CUTSHEET":
-            return name
-
-    # Fallback: first non-junk tab
-    for name in names:
-        lower = name.lower()
-        if not any(pat in lower for pat in _SKIP_TAB_PATTERNS):
-            return name
-
-    # Last resort
-    return names[0]
+    log.info("Selected tab: %r from %d available tabs", selected, len(names))
+    return selected

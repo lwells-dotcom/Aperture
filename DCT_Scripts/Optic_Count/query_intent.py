@@ -72,6 +72,8 @@ class QuestionContext:
     extracted_role: str
     extracted_side: str
     extracted_ip: str
+    extracted_cable_type: str
+    extracted_data_hall: str
 
 
 @dataclass
@@ -114,6 +116,8 @@ def build_context(question: str) -> QuestionContext:
         extracted_role=role,
         extracted_side=side,
         extracted_ip=ext.extract_ip(question),
+        extracted_cable_type=ext.extract_cable_type(question),
+        extracted_data_hall=ext.extract_data_hall(question),
     )
 
 
@@ -268,13 +272,28 @@ def route_location_intent(ctx: QuestionContext) -> Optional[IntentResult]:
     rank_hits = _hits(ctx.token_set, RANKING_WORDS)
     count_hits = _hits(ctx.token_set, COUNT_WORDS)
     conn_hits = _hits(ctx.token_set, CONNECTION_WORDS)
-    lookup_hits = ctx.token_set & {"on", "in", "at", "devices", "what", "which", "list", "show"}
+    # Extended lookup words: added overview/detail/info/breakdown so phrasing
+    # like "overview of rack X" or "details on dh202:002" reaches the router.
+    lookup_hits = ctx.token_set & {
+        "on", "in", "at", "devices", "what", "which", "list", "show",
+        "overview", "detail", "details", "info", "information", "breakdown",
+    }
 
     # Exact LOC:CAB:RU -> location_lookup
     if ctx.has_loc_token:
         return IntentResult("location_lookup", "high",
                             "exact LOC:CAB:RU token found",
                             "location", ["loc_token"])
+
+    # Model token + data hall: the data hall is a scoping filter on the model query,
+    # not the primary intent. Return model_search so build_query_params can populate
+    # data_hall_filter. This wins over any location-based routing below.
+    if ctx.has_model_token and ctx.extracted_data_hall:
+        return IntentResult(
+            "model_search", "high",
+            f"model '{ctx.extracted_model}' scoped to data hall '{ctx.extracted_data_hall}'",
+            "device", [ctx.extracted_model, ctx.extracted_data_hall],
+        )
 
     # Rack/cabinet + ranking words -> rack_summary
     if loc_hits and rank_hits:
@@ -306,7 +325,47 @@ def route_location_intent(ctx: QuestionContext) -> Optional[IntentResult]:
                             "rack/cabinet + summary words",
                             "location", sorted(loc_hits))
 
-    # Rack/cabinet + list/show/what/on/in -> location_lookup
+    # When a specific location is extracted and the question uses summary/overview/
+    # breakdown language, return the rack-level rollup even without LOCATION_WORDS
+    # (e.g. "Summary of dh202:002" has no "rack" keyword but still needs rack_summary).
+    # Guard: skip when a section name is also present so route_section_intent wins.
+    if not ctx.extracted_section and ctx.extracted_location:
+        _summary_words = ctx.token_set & {"summary", "overview", "breakdown"}
+        if _summary_words:
+            return IntentResult("rack_summary", "high",
+                                "extracted location + summary/overview words",
+                                "location", sorted(_summary_words))
+
+        # Unambiguous data-hall + location pair: both fields explicitly present.
+        # Route based on the intent signal carried by the remaining words.
+        if ctx.extracted_data_hall:
+            # Bare rack number (digits only, no colon) → prefer rack-level rollup
+            if re.fullmatch(r"\d{1,4}", ctx.extracted_location):
+                return IntentResult("rack_summary", "high",
+                                    "data hall + bare rack number → rack rollup",
+                                    "location", [ctx.extracted_data_hall, ctx.extracted_location])
+            # Detail/lookup words present → specific connection lookup
+            _detail_words = ctx.token_set & {
+                "detail", "details", "info", "information", "about", "tell", "describe",
+            }
+            if _detail_words or lookup_hits:
+                return IntentResult("location_lookup", "high",
+                                    "data hall + location + detail/lookup words",
+                                    "location", [ctx.extracted_data_hall, ctx.extracted_location])
+            # No qualifying words — unambiguous rack reference, default to lookup
+            return IntentResult("location_lookup", "high",
+                                "data hall + location (unambiguous reference)",
+                                "location", [ctx.extracted_data_hall, ctx.extracted_location])
+
+    # "what racks are [in/at] [this location/here]?" with no specific location
+    # extracted → user wants a list of racks at the site, not devices inside one rack.
+    # rack_summary with empty location_filter returns all racks for the site.
+    if loc_hits & {"rack", "racks"} and lookup_hits and not ctx.extracted_location:
+        return IntentResult("rack_summary", "medium",
+                            "rack list question with no specific location → site-wide rack summary",
+                            "location", sorted(loc_hits & {"rack", "racks"}))
+
+    # Rack/cabinet + list/show/what/on/in/overview/detail -> location_lookup
     if loc_hits and lookup_hits:
         return IntentResult("location_lookup", "medium",
                             "rack/cabinet + lookup words",
@@ -327,6 +386,34 @@ def route_location_intent(ctx: QuestionContext) -> Optional[IntentResult]:
                             "stored/installed/located at phrase",
                             "location", ["positional_verb"])
 
+    return None
+
+
+def route_cable_type_intent(ctx: QuestionContext) -> Optional[IntentResult]:
+    """Cable media type queries (CAT6a, MPO, SMF/MMF, fiber, copper).
+
+    Runs before route_optic_intent so physical-cable questions don't get
+    absorbed into optic_count.
+    """
+    if re.search(r"\bcable\s*types?\b", ctx.normalized):
+        return IntentResult("cable_type_summary", "high",
+                            "cable type keyword",
+                            "cable_type", ["cable_type"])
+    if re.search(r"\bhow\s+many\s+(?:cat6|mpo|fiber|copper|smf|mmf)\b", ctx.normalized):
+        return IntentResult("cable_type_summary", "high",
+                            "how many + cable media keyword",
+                            "cable_type", ["cable_count"])
+    if ctx.extracted_cable_type and (
+        _hits(ctx.token_set, COUNT_WORDS)
+        or ctx.token_set & {"summary", "breakdown", "inventory", "list"}
+    ):
+        return IntentResult("cable_type_summary", "high",
+                            f"cable type token '{ctx.extracted_cable_type}' + count/summary words",
+                            "cable_type", [ctx.extracted_cable_type])
+    if re.search(r"\b(?:fiber|copper)\s*cables?\b", ctx.normalized):
+        return IntentResult("cable_type_summary", "medium",
+                            "fiber/copper cables phrase",
+                            "cable_type", ["fiber_copper"])
     return None
 
 
@@ -977,6 +1064,7 @@ _ROUTER_CHAIN: List[Callable[[QuestionContext], Optional[IntentResult]]] = [
     route_lldp_intent,
     route_role_intent,
     route_location_intent,
+    route_cable_type_intent,   # before optic — cable media is more specific than optic type
     route_optic_intent,
     route_status_intent,
     route_section_intent,

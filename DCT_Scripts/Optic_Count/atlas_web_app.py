@@ -18,32 +18,57 @@ import re
 import tempfile
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import io
 from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
+import openpyxl.utils.exceptions
 
 import Define_Optic_Count
 import Source_count_Netbox
 import demo_auth_ai
 import build_sheet_processor
 import cutsheet_preprocessor
+import netbox_dashboard_ingest
+from netbox_dashboard_routes import netbox_dashboard_bp
 
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
+
+_DASHBOARD_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
+    "img-src 'self' data:; "
+    "connect-src 'self'"
+)
+_DEFAULT_CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'"
+)
+
 
 @app.after_request
 def set_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'"
-    )
+    # The /dashboard route loads Tailwind, Chart.js, and Google Fonts from CDNs.
+    # All other routes keep the stricter default CSP.
+    if request.path == "/dashboard":
+        response.headers["Content-Security-Policy"] = _DASHBOARD_CSP
+    else:
+        response.headers["Content-Security-Policy"] = _DEFAULT_CSP
     return response
+
+
+# Register the NetBox dashboard blueprint
+app.register_blueprint(netbox_dashboard_bp)
 
 UPLOAD_DIR = Path(os.getenv("ATLAS_UPLOAD_DIR", "./uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -91,9 +116,8 @@ _RATE_LIMIT_MAX_KEYS = 5000
 
 
 def _get_client_ip() -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    # Trust only the direct connection — X-Forwarded-For is trivially spoofable.
+    # Add a TRUSTED_PROXIES allowlist if a reverse proxy is deployed in front.
     return request.remote_addr or "unknown"
 
 
@@ -102,7 +126,7 @@ def _check_rate_limit(key: str) -> bool:
     with _state_lock:
         if len(_RATE_LIMIT_STORE) > _RATE_LIMIT_MAX_KEYS:
             expired = [k for k, (_, ws) in _RATE_LIMIT_STORE.items()
-                       if now - ws > _RATE_LIMIT_WINDOW]
+                       if now - ws > _RATE_LIMIT_WINDOW][:100]
             for k in expired:
                 del _RATE_LIMIT_STORE[k]
         count, window_start = _RATE_LIMIT_STORE.get(key, (0, now))
@@ -233,12 +257,15 @@ def _sse_stream(target_fn, *args, **kwargs):
     its output as Server-Sent Events.  target_fn must signal completion
     by putting None into the queue (same contract as the desktop version).
     """
-    q = queue.Queue()
+    q = queue.Queue(maxsize=500)
     threading.Thread(target=target_fn, args=(*args, q), kwargs=kwargs, daemon=True).start()
 
     def generate():
         while True:
-            msg = q.get()
+            try:
+                msg = q.get(timeout=60)
+            except queue.Empty:
+                break
             if msg is None:
                 yield "data: [DONE]\n\n"
                 break
@@ -280,10 +307,10 @@ def _extract_site_code(save_path, prebuilt=None):
     if str(save_path).lower().endswith(".xlsx"):
         try:
             import pandas as pd
-            xls = pd.ExcelFile(str(save_path))
+            xls = pd.ExcelFile(str(save_path), engine="calamine")
             for sn in xls.sheet_names:
                 if sn.strip().casefold() in ("site-vars", "site_vars", "site vars", "sitevars"):
-                    sv = pd.read_excel(str(save_path), sheet_name=sn, header=None)
+                    sv = pd.read_excel(xls, sheet_name=sn, header=None, engine="calamine")
                     for _, row in sv.iterrows():
                         key = str(row.iloc[0]).strip().lower() if len(row) > 0 else ""
                         val = str(row.iloc[1]).strip() if len(row) > 1 else ""
@@ -323,6 +350,59 @@ def _check_postgres() -> bool:
     _pg_cache["ok"] = result
     _pg_cache["ts"] = now
     return result
+
+
+def _run_postgres_upload_job(username: str, save_path_str: str, site_code: str, gen: int) -> None:
+    """Run atlas_data_loader.load_file after /api/upload-count returned (background)."""
+    pg_result = None
+    err_msg = None
+    try:
+        import atlas_data_loader
+
+        pg_result = atlas_data_loader.load_file(
+            save_path_str, site_code, uploaded_by=username
+        )
+    except Exception as exc:  # noqa: BLE001
+        err_msg = str(exc)
+        log.exception("Background Postgres load failed for user=%s", username)
+
+    with _state_lock:
+        ctx = USER_CONTEXT.get(username)
+        if not ctx or ctx.get("_pg_import_gen") != gen:
+            log.info(
+                "Discarding pg upload result (stale or missing context) user=%s",
+                username,
+            )
+            return
+        ctx.pop("_postgres_import_pending", None)
+        ctx.pop("_pg_import_gen", None)
+        if err_msg:
+            ctx["_postgres_import_error"] = err_msg[:800]
+        elif pg_result and not pg_result.get("ok"):
+            ctx["_postgres_import_error"] = str(pg_result.get("error") or "load_failed")[:800]
+        else:
+            ctx.pop("_postgres_import_error", None)
+        USER_CONTEXT[username] = ctx
+
+        if pg_result and pg_result.get("ok"):
+            uid = (
+                pg_result.get("upload_id")
+                if not pg_result.get("skipped")
+                else pg_result.get("existing_upload_id")
+            )
+            sid = pg_result.get("site_id")
+            if sid is not None and uid is not None:
+                USER_SITE[username] = {
+                    "site_code": site_code,
+                    "site_id": sid,
+                    "upload_id": uid,
+                }
+                log.info(
+                    "Postgres load OK (async): site=%s upload_id=%s rows=%s",
+                    site_code,
+                    uid,
+                    pg_result.get("connections_loaded"),
+                )
 
 
 @app.get("/api/health")
@@ -382,39 +462,19 @@ def upload_count():
     save_path = UPLOAD_DIR / unique_name
     f.save(save_path)
 
+    include_by_status = request.form.get("include_by_status", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
     # Site code is derivable from filename/SITE-VARS before the full parse, so
-    # extract it now and start Postgres ingest in parallel with the optic count.
+    # extract it now. Run preprocessor *before* Postgres so bad sheets fail fast
+    # and the browser is not stuck behind a long DB ingest with no response.
     site_code = _extract_site_code(save_path)
 
-    def _pg_load_background(save_path, site_code, username):
-        try:
-            import atlas_data_loader
-            pg_result = atlas_data_loader.load_file(
-                str(save_path), site_code, uploaded_by=username
-            )
-            if pg_result and pg_result.get("ok") and not pg_result.get("skipped"):
-                with _state_lock:
-                    USER_SITE[username] = {
-                        "site_code": site_code,
-                        "site_id": pg_result["site_id"],
-                        "upload_id": pg_result.get("upload_id"),
-                    }
-                log.info("Background Postgres load OK: site=%s rows=%s",
-                         site_code, pg_result.get("connections_loaded"))
-        except Exception as exc:
-            log.error("Background Postgres load failed: %s", exc)
-
     pg_available = _check_postgres()
-    if pg_available:
-        threading.Thread(
-            target=_pg_load_background,
-            args=(save_path, site_code, claims["sub"]),
-            daemon=True,
-        ).start()
 
     try:
-        # ── Preprocessor: normalize statuses, strip section headers,
-        #    count A/Z optics independently ──
+        # ── Preprocessor first (calamine): normalize, strip section headers ──
         try:
             prep = cutsheet_preprocessor.preprocess_upload(str(save_path))
             result_text = cutsheet_preprocessor.format_optic_count_text(prep["optic_counts"])
@@ -431,17 +491,60 @@ def upload_count():
         else:
             _, context = Define_Optic_Count.count_and_build_context([str(save_path)])
             context["ts"] = time.time()
-    except Exception as exc:
-        return jsonify({"error": f"Failed to parse file: {exc}"}), 500
+
+        # Optional: same request as upload — avoids a second round-trip and
+        # "No file loaded" if the first request timed out before context was set.
+        if include_by_status:
+            try:
+                status_block = Define_Optic_Count.count_all_files_gui_by_status(
+                    [str(save_path)]
+                )
+                result_text = result_text + "\n\n" + ("=" * 72) + "\n\n" + status_block
+            except Exception as status_exc:  # noqa: BLE001
+                log.warning("include_by_status block failed: %s", status_exc)
+                result_text += (
+                    f"\n\n(Warning: in-service sort failed: {status_exc})\n"
+                )
+    except Exception:
+        log.exception("File upload processing failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         Define_Optic_Count.clear_excel_cache()
+
+    # Return JSON as soon as counting is done; Postgres ingest can take minutes
+    # on large workbooks and was blocking the browser for 90s+.
+    pg_import_gen = int(time.time() * 1000) & 0x7FFFFFFF
+    if pg_available:
+        context["_postgres_import_pending"] = True
+        context["_pg_import_gen"] = pg_import_gen
 
     _evict_stale_contexts()
     with _state_lock:
         USER_CONTEXT[claims["sub"]] = context
 
+    if pg_available:
+        threading.Thread(
+            target=_run_postgres_upload_job,
+            args=(claims["sub"], str(save_path), site_code, pg_import_gen),
+            name="atlas-pg-upload",
+            daemon=True,
+        ).start()
+
     _audit("upload_count", claims["sub"], {"file": safe_name})
-    resp = {"ok": True, "file": safe_name, "output": result_text, "pg_loaded": "pending" if pg_available else "skipped"}
+    if not pg_available:
+        pg_status = "skipped"
+    else:
+        pg_status = "pending"
+    resp = {
+        "ok": True,
+        "file": safe_name,
+        "output": result_text,
+        "pg_loaded": pg_status,
+    }
+    if pg_available:
+        resp["pg_message"] = (
+            "Saving to the database in the background — counts above are ready now."
+        )
     return jsonify(resp)
 
 
@@ -460,7 +563,10 @@ def count_by_status():
 
     # Re-run against the saved file path stored in context
     files = [f["file_path"] for f in USER_CONTEXT[claims["sub"]].get("files", [])]
-    result_text = Define_Optic_Count.count_all_files_gui_by_status(files)
+    try:
+        result_text = Define_Optic_Count.count_all_files_gui_by_status(files)
+    except (FileNotFoundError, OSError):
+        return jsonify({"error": "File no longer available — re-upload to refresh"}), 400
     return jsonify({"ok": True, "output": result_text})
 
 
@@ -472,7 +578,7 @@ def count_by_status():
 @app.get("/api/stream/netbox")
 def stream_netbox():
     """Single-site NetBox inventory — streams live as results arrive."""
-    site_name = request.args.get("site", "").strip() or "US-WEST-09A"
+    site_name = request.args.get("site", "").strip() or "us-west-09a"
     active_only = request.args.get("active_only", "true").lower() != "false"
     include_optic_locations = request.args.get("include_optic_locations", "false").lower() == "true"
     return _sse_stream(Source_count_Netbox.get_site_inventory, site_name, active_only=active_only, include_optic_locations=include_optic_locations)
@@ -523,8 +629,11 @@ def buildsheet():
 
     try:
         result = build_sheet_processor.process_rack(cut_path, tpl_path, room, rack)
-    except (FileNotFoundError, ValueError, OSError) as exc:
-        return jsonify({"error": str(exc)}), 500
+    except ValueError:
+        return jsonify({"error": "Invalid input parameters"}), 400
+    except (FileNotFoundError, OSError, openpyxl.utils.exceptions.InvalidFileException, zipfile.BadZipFile):
+        log.exception("Rack sheet generation failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         try:
             os.unlink(cut_path)
@@ -572,8 +681,11 @@ def buildsheet_layout():
 
     try:
         excel_bytes = build_sheet_processor.generate_layout_workbook(cut_path, tpl_path, room)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    except ValueError:
+        return jsonify({"error": "Invalid input parameters"}), 400
+    except Exception:
+        log.exception("Layout workbook generation failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         try:
             os.unlink(cut_path)
@@ -606,8 +718,11 @@ def buildsheet_dh():
 
     try:
         result = build_sheet_processor.process_room(cut_path, room)
-    except (FileNotFoundError, ValueError, OSError) as exc:
-        return jsonify({"error": str(exc)}), 500
+    except ValueError:
+        return jsonify({"error": "Invalid input parameters"}), 400
+    except (FileNotFoundError, OSError, openpyxl.utils.exceptions.InvalidFileException, zipfile.BadZipFile):
+        log.exception("Room sheet generation failed")
+        return jsonify({"error": "File processing failed"}), 500
     finally:
         try:
             os.unlink(cut_path)
@@ -620,6 +735,23 @@ def buildsheet_dh():
 # ---------------------------------------------------------------------------
 # AI Q&A
 # ---------------------------------------------------------------------------
+
+def _get_latest_upload_for_user(conn, username):
+    """Return {site_code, site_id, upload_id} for the user's latest active upload, or None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT s.id AS site_id, s.site_code, cu.id AS upload_id
+               FROM cutsheet_uploads cu
+               JOIN sites s ON cu.site_id = s.id
+               WHERE cu.uploaded_by = %s AND cu.is_active = TRUE
+               ORDER BY cu.created_at DESC LIMIT 1""",
+            (username,),
+        )
+        row = cur.fetchone()
+    if row:
+        return {"site_code": row[1], "site_id": row[0], "upload_id": row[2]}
+    return None
+
 
 @app.post("/api/ask")
 def ask_ai():
@@ -637,46 +769,72 @@ def ask_ai():
 
     username = claims["sub"]
 
+    # --- If a cutsheet upload just started Postgres ingest, wait (bounded) ---
+    with _state_lock:
+        _pend_ctx = USER_CONTEXT.get(username)
+    if _pend_ctx and _pend_ctx.get("_postgres_import_pending"):
+        _deadline = time.monotonic() + 120.0
+        while time.monotonic() < _deadline:
+            time.sleep(0.25)
+            with _state_lock:
+                if not USER_CONTEXT.get(username, {}).get("_postgres_import_pending"):
+                    break
+        with _state_lock:
+            if USER_CONTEXT.get(username, {}).get("_postgres_import_pending"):
+                return jsonify(
+                    {
+                        "error": (
+                            "Database import still running (large file). "
+                            "Wait up to two minutes and try again."
+                        ),
+                        "detail": "pending_postgres_import",
+                    }
+                ), 503
+
     # --- Try Postgres context first ---
+    pg_fallback_reason = None
+
     with _state_lock:
         site_info = USER_SITE.get(username)
+
+    if not site_info and not _check_postgres():
+        pg_fallback_reason = "postgres_unreachable"
 
     # If no in-memory site info, try recovering from Postgres
     if not site_info and _check_postgres():
         try:
             from atlas_data_loader import managed_connection
             with managed_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """SELECT s.id AS site_id, s.site_code, cu.id AS upload_id
-                           FROM cutsheet_uploads cu
-                           JOIN sites s ON cu.site_id = s.id
-                           WHERE cu.uploaded_by = %s AND cu.is_active = TRUE
-                           ORDER BY cu.created_at DESC LIMIT 1""",
-                        (username,),
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        site_info = {
-                            "site_code": row[1],
-                            "site_id": row[0],
-                            "upload_id": row[2],
-                        }
-                        with _state_lock:
-                            USER_SITE[username] = site_info
-                        log.info("Recovered site context from Postgres for user=%s", username)
+                recovered = _get_latest_upload_for_user(conn, username)
+            if recovered:
+                site_info = recovered
+                with _state_lock:
+                    USER_SITE[username] = site_info
+                log.info("Recovered site context from Postgres for user=%s", username)
         except Exception as exc:
             log.warning("Postgres site recovery failed: %s", exc)
+
+    if not site_info and pg_fallback_reason is None:
+        pg_fallback_reason = "no_active_upload_for_user"
 
     pg_context = None
     if site_info and _check_postgres():
         try:
             from atlas_postgres_context import build_postgres_context
+            _t0 = time.monotonic()
             pg_context = build_postgres_context(
                 question, site_info["site_id"],
                 upload_id=site_info.get("upload_id"),
             )
+            _elapsed = time.monotonic() - _t0
+            if _elapsed > 30:
+                log.warning(
+                    "build_postgres_context took %.1fs (>30s threshold) for user=%s",
+                    _elapsed, username,
+                )
             if pg_context and "error" not in pg_context:
+                if site_info and site_info.get("site_code"):
+                    pg_context["site_code"] = site_info["site_code"]
                 log.info(
                     "Postgres context: type=%s tokens=%s elapsed=%ss",
                     pg_context.get("question_type"),
@@ -686,6 +844,11 @@ def ask_ai():
         except Exception as exc:
             log.warning("Postgres context build failed (falling back): %s", exc)
             pg_context = None
+            pg_fallback_reason = f"build_failed: {exc}"
+
+    if pg_context and "error" in pg_context:
+        pg_fallback_reason = f"context_error: {pg_context['error']}"
+        pg_context = None
 
     # Build sheet context: try in-memory, fall back to Postgres
     with _state_lock:
@@ -739,6 +902,8 @@ def ask_ai():
         resp["question_type"] = pg_context.get("question_type", "")
         resp["upload_id"] = site_info.get("upload_id") if site_info else None
         resp["row_count"] = pg_context.get("row_count", 0)
+        resp["classification_confidence"] = pg_context.get("confidence")
+        resp["classification_reason"] = pg_context.get("classification_reason")
     elif rack_ctx:
         resp["context_source"] = "RACK_ANALYZER"
         resp["question_type"] = rack_ctx.get("question_type", "")
@@ -747,9 +912,8 @@ def ask_ai():
     else:
         resp["context_source"] = "EMPTY_FALLBACK"
 
-    # Add pg_warning if Postgres was attempted but failed
-    if site_info and _check_postgres() and not pg_context:
-        resp["pg_warning"] = "Postgres context build failed (falling back to in-memory)"
+    if resp["context_source"] != "POSTGRES" and pg_fallback_reason:
+        resp["pg_fallback_reason"] = pg_fallback_reason
 
     _audit("ask_ai", username, {"question": question})
     return jsonify(resp)
@@ -841,7 +1005,7 @@ HTML_PAGE = """<!doctype html>
   <!-- 3. NetBox -->
   <div class="section">
     <h3>NetBox Inventory</h3>
-    <input type="text" id="netboxSite" placeholder="Site name (e.g. US-WEST-09A)" style="width:300px"/>
+    <input type="text" id="netboxSite" placeholder="Site slug or name (e.g. us-west-09a)" style="width:300px"/>
     <div style="margin: 6px 0;">
       <label><input type="checkbox" id="netboxActiveOnly" checked/> Count In Service items only</label>
     </div>
@@ -1125,11 +1289,17 @@ HTML_PAGE = """<!doctype html>
         document.getElementById('countOut').textContent = 'Error: ' + (data.error || 'Unknown error');
       } else {
         document.getElementById('countOut').textContent = data.output;
-        // Show Postgres load warning if load failed
-        if (data.pg_loaded === false) {
+        if (data.pg_loaded === 'pending' && data.pg_message) {
+          const info = document.createElement('div');
+          info.style.cssText = 'background:#E8F0FE; border:1px solid #2741E7; border-radius:4px; padding:10px; margin-bottom:10px; color:#1a1a2e; font-size:0.9rem;';
+          info.textContent = data.pg_message;
+          const countOut = document.getElementById('countOut');
+          countOut.parentNode.insertBefore(info, countOut);
+        }
+        if (data.pg_loaded === 'failed') {
           const banner = document.createElement('div');
           banner.style.cssText = 'background:#FFFACD; border:1px solid #FFD700; border-radius:4px; padding:10px; margin-bottom:10px; color:#333;';
-          banner.textContent = 'Warning: Cutsheet uploaded but database load failed: ' + (data.pg_error || 'Unknown error') + '. Queries will use in-memory context only.';
+          banner.textContent = 'Warning: Cutsheet counted but database load failed: ' + (data.pg_error || 'Unknown error') + '. Queries will use in-memory context only.';
           const countOut = document.getElementById('countOut');
           countOut.parentNode.insertBefore(banner, countOut);
         }
@@ -1149,24 +1319,33 @@ HTML_PAGE = """<!doctype html>
     try {
       const form = new FormData();
       form.append('file', fileInput.files[0]);
-      const uploadRes = await _authFetch('/api/upload-count', {
+      form.append('include_by_status', '1');
+      const res = await _authFetch('/api/upload-count', {
         method: 'POST',
         headers: {'Authorization': 'Bearer ' + token},
         body: form
       });
-      if (!uploadRes.ok) {
-        let uploadData;
-        try { uploadData = await uploadRes.json(); } catch (_) { uploadData = {error: 'Server error (status ' + uploadRes.status + ')'}; }
-        document.getElementById('countOut').textContent = 'Error: ' + (uploadData.error || 'Upload failed');
-        return;
-      }
-      const res = await _authFetch('/api/count-by-status', {
-        method: 'POST',
-        headers: {'Authorization': 'Bearer ' + token}
-      });
       let data;
       try { data = await res.json(); } catch (_) { data = {error: 'Server returned non-JSON (status ' + res.status + ')'}; }
-      document.getElementById('countOut').textContent = res.ok ? data.output : ('Error: ' + (data.error || 'Unknown error'));
+      if (!res.ok) {
+        document.getElementById('countOut').textContent = 'Error: ' + (data.error || 'Upload failed');
+        return;
+      }
+      document.getElementById('countOut').textContent = data.output;
+      if (data.pg_loaded === 'pending' && data.pg_message) {
+        const info = document.createElement('div');
+        info.style.cssText = 'background:#E8F0FE; border:1px solid #2741E7; border-radius:4px; padding:10px; margin-bottom:10px; color:#1a1a2e; font-size:0.9rem;';
+        info.textContent = data.pg_message;
+        const countOut = document.getElementById('countOut');
+        countOut.parentNode.insertBefore(info, countOut);
+      }
+      if (data.pg_loaded === 'failed') {
+        const banner = document.createElement('div');
+        banner.style.cssText = 'background:#FFFACD; border:1px solid #FFD700; border-radius:4px; padding:10px; margin-bottom:10px; color:#333;';
+        banner.textContent = 'Warning: Cutsheet counted but database load failed: ' + (data.pg_error || 'Unknown error') + '. Queries will use in-memory context only.';
+        const countOut = document.getElementById('countOut');
+        countOut.parentNode.insertBefore(banner, countOut);
+      }
     } catch (err) {
       document.getElementById('countOut').textContent = 'Error: ' + err.message;
     } finally {
@@ -1202,7 +1381,7 @@ HTML_PAGE = """<!doctype html>
   }
 
   function streamNetbox() {
-    const site = document.getElementById('netboxSite').value.trim() || 'US-WEST-09A';
+    const site = document.getElementById('netboxSite').value.trim() || 'us-west-09a';
     const activeOnly = document.getElementById('netboxActiveOnly').checked ? 'true' : 'false';
     const opticLoc = document.getElementById('netboxOpticLocations').checked ? 'true' : 'false';
     _startNetboxSSE('/api/stream/netbox?site=' + encodeURIComponent(site) + '&active_only=' + activeOnly + '&include_optic_locations=' + opticLoc);
@@ -1643,6 +1822,67 @@ function downloadCableMapCsv(type) {
 </script>
 </body>
 </html>"""
+
+
+# ---------------------------------------------------------------------------
+# Background NetBox ingestion scheduler
+# ---------------------------------------------------------------------------
+# Pulls a fresh snapshot every 15 minutes so the /dashboard endpoints always
+# read recent data. Single-worker gunicorn config (Dockerfile) means this fires
+# once per process. Disable by setting ATLAS_RUN_SCHEDULER=0.
+
+_SCHEDULER_STARTED = False
+_scheduler = None
+
+
+def _run_netbox_ingest_safe():
+    """Wrapper that swallows exceptions so the scheduler keeps ticking."""
+    try:
+        result = netbox_dashboard_ingest.ingest_snapshot()
+        log.info("NetBox snapshot complete: %s", result)
+    except (RuntimeError, OSError) as exc:
+        log.warning("NetBox ingest failed: %s", exc)
+    except Exception:  # noqa: BLE001 — keep scheduler alive on unexpected errors
+        log.exception("NetBox ingest crashed")
+
+
+def _start_netbox_scheduler():
+    global _SCHEDULER_STARTED, _scheduler
+    if _SCHEDULER_STARTED:
+        return
+    if os.getenv("ATLAS_RUN_SCHEDULER", "1") != "1":
+        log.info("NetBox scheduler disabled (ATLAS_RUN_SCHEDULER != 1)")
+        return
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+    except ImportError:
+        log.warning("APScheduler not installed; NetBox scheduler skipped")
+        return
+
+    interval_min = int(os.getenv("NETBOX_INGEST_INTERVAL_MIN", "15"))
+    sched = BackgroundScheduler(daemon=True, timezone="UTC")
+    # Run once shortly after startup so the dashboard isn't empty.
+    sched.add_job(
+        _run_netbox_ingest_safe,
+        trigger=IntervalTrigger(minutes=interval_min),
+        id="netbox_ingest",
+        next_run_time=None,
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.start()
+    _scheduler = sched
+    _SCHEDULER_STARTED = True
+    log.info("NetBox scheduler started (every %d min)", interval_min)
+
+    # Seed first snapshot in a background thread so app startup isn't blocked
+    # by a slow NetBox query.
+    threading.Thread(target=_run_netbox_ingest_safe, name="netbox-seed", daemon=True).start()
+
+
+# Start the scheduler when the app module is imported (e.g. by gunicorn).
+_start_netbox_scheduler()
 
 
 if __name__ == "__main__":

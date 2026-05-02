@@ -163,7 +163,7 @@ def normalize_cutsheet(df: pd.DataFrame) -> Dict[str, Any]:
     connections = []    # list of connection dicts
     breakout_seen = set()  # track breakout groups to avoid double-counting optics
 
-    for idx, row in data_rows.iterrows():
+    for row in data_rows.to_dict('records'):
         section = row.get("_section", "UNKNOWN")
         status = _normalize_cell(row.get(Canon.STATUS))
 
@@ -355,7 +355,7 @@ def load_prebuilt_sheets(file_path: str) -> Optional[Dict[str, Any]]:
     if has_inventory:
         inv_df = pd.read_excel(file_path, sheet_name=sheet_names_lower["device_inventory"])
         model_summary: Dict[str, Any] = {}
-        for _, row in inv_df.iterrows():
+        for row in inv_df.to_dict('records'):
             model = _normalize_model_cell(row.get("MODEL_NORMALIZED") or row.get("MODEL"))
             if not model:
                 continue
@@ -399,7 +399,7 @@ def load_prebuilt_sheets(file_path: str) -> Optional[Dict[str, Any]]:
         optic_mismatches: List[Dict[str, str]] = []
         status_by_section: Dict[str, Dict[str, int]] = {}
 
-        for _, row in conn_df.iterrows():
+        for row in conn_df.to_dict('records'):
             section = _normalize_cell(row.get("SECTION", ""))
             status_raw = _normalize_cell(row.get("STATUS", ""))
             status = normalize_status(status_raw) if status_raw else ""
@@ -469,10 +469,10 @@ def load_prebuilt_sheets(file_path: str) -> Optional[Dict[str, Any]]:
         model_counts: Dict[str, Dict[str, int]] = {}
         parsing_section = None
 
-        for _, row in sum_df.iterrows():
-            c0 = _normalize_cell(row.iloc[0]) if len(row) > 0 else ""
-            c1 = _normalize_cell(row.iloc[1]) if len(row) > 1 else ""
-            c2 = _normalize_cell(row.iloc[2]) if len(row) > 2 else ""
+        for row in sum_df.to_dict('records'):
+            c0 = _normalize_cell(row.get(0, ""))
+            c1 = _normalize_cell(row.get(1, ""))
+            c2 = _normalize_cell(row.get(2, ""))
 
             if "UNIQUE DEVICE COUNTS" in c0.upper():
                 parsing_section = "models"
@@ -554,6 +554,14 @@ def build_llm_context_from_prebuilt(prebuilt: Dict[str, Any]) -> Dict[str, Any]:
 
 _CONNECTION_CACHE: Dict[str, pd.DataFrame] = {}  # keyed by file_path
 _CONNECTION_CACHE_COLS: Dict[str, Dict[str, str]] = {}  # column name mapping per file
+_MAX_CACHE = 3
+
+
+def _evict_connection_cache_if_full():
+    while len(_CONNECTION_CACHE) >= _MAX_CACHE:
+        oldest = next(iter(_CONNECTION_CACHE))
+        del _CONNECTION_CACHE[oldest]
+        _CONNECTION_CACHE_COLS.pop(oldest, None)
 
 
 def preload_connections(file_path: str) -> bool:
@@ -583,6 +591,7 @@ def preload_connections(file_path: str) -> bool:
             # Pre-lowercase the DNS columns for fast matching
             df["_a_dns_lower"] = df["A_DNS_NAME"].astype(str).str.lower()
             df["_z_dns_lower"] = df["Z_DNS_NAME"].astype(str).str.lower()
+            _evict_connection_cache_if_full()
             _CONNECTION_CACHE[file_path] = df
             _CONNECTION_CACHE_COLS[file_path] = {
                 "a_dns": "A_DNS_NAME", "z_dns": "Z_DNS_NAME",
@@ -603,6 +612,7 @@ def preload_connections(file_path: str) -> bool:
         if Canon.A_DEVICE in df.columns and Canon.Z_DEVICE in df.columns:
             df["_a_dns_lower"] = df[Canon.A_DEVICE].astype(str).str.lower()
             df["_z_dns_lower"] = df[Canon.Z_DEVICE].astype(str).str.lower()
+            _evict_connection_cache_if_full()
             _CONNECTION_CACHE[file_path] = df
             _CONNECTION_CACHE_COLS[file_path] = {
                 "a_dns": Canon.A_DEVICE, "z_dns": Canon.Z_DEVICE,
@@ -624,9 +634,15 @@ def lookup_device_connections(file_path: str, question: str, max_rows: int = 200
     Falls back to loading from disk if cache is empty.
     """
     # Extract potential device hostnames from the question.
-    tokens = question.replace(",", " ").replace(";", " ").split()
-    candidates = [t.strip("'\"?.,") for t in tokens if t.count("-") >= 2 and len(t) > 10]
+    tokens = [t.strip("'\"?.,") for t in question.replace(",", " ").replace(";", " ").split()]
+    candidates = [t for t in tokens if t.count("-") >= 1 and len(t) > 5 and ":" not in t]
     if not candidates:
+        candidates = [
+            t for t in tokens
+            if len(t) > 4 and any(c.isdigit() for c in t) and any(c.isalpha() for c in t) and ":" not in t
+        ]
+    if not candidates:
+        log.debug("No device hostname candidates found in: %r", question[:80])
         return None
 
     target = candidates[0].lower()
@@ -689,6 +705,11 @@ def build_llm_context(normalized: Dict[str, Any]) -> Dict[str, Any]:
     for model in model_summary.values():
         model["sections"] = sorted(model["sections"])
 
+    # device_roles: not available in the in-memory path (no host_inventory loaded).
+    # The Postgres path uses the role_lookup query instead. If host data is ever
+    # passed into this function, build a device_name -> role mapping here.
+    device_roles: Dict[str, str] = {}
+
     # H8: Model-by-side grouping.
     # Tells the LLM which device models appear exclusively on the A-side, Z-side, or both.
     # Helps answer "what's on the Z-side?" without Postgres role data.
@@ -750,6 +771,7 @@ def build_llm_context(normalized: Dict[str, Any]) -> Dict[str, Any]:
         "section_topology": section_topology,
         "section_connection_counts": section_conn_counts,
         "connection_status_counts": status_counts,
+        "device_roles": device_roles,
         "stats": normalized["stats"],
     }
 

@@ -24,3 +24,7 @@ build/
 # Ignore nested git repos completely
 DCT_Scripts/.git
 DCT_Scripts/**/.git
+.gitnexus
+gitnexus/
+graphify-out/
+**/graphify-out/
