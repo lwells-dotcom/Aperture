@@ -8,10 +8,13 @@ Sites are discovered dynamically via site_list GraphQL query. If discovery
 fails or returns no results, falls back to _FALLBACK_SITE_DH_MAP (Ellendale
 DH201-204). All sites are queried in parallel (up to 5 workers).
 
-Per site with locations: 3 GraphQL calls per location (device_list,
-interface_list, inventory_item_list) plus 3 site-wide calls for devices
-without a modeled location. Sites with no NetBox locations still ingest via
-the site-wide calls only (3 calls).
+Per site with locations: for each data-hall location slug, three paginated
+GraphQL lists (device_list, interface_list, inventory_item_list) using
+`pagination: {start, limit}` (see Source_count_Netbox._graphql_paginated) so
+large sites are not truncated at NetBox's 1000-row cap. Then three paginated
+site-wide lists for devices/interfaces/optics not already covered by those
+per-location passes. Sites with no NetBox locations ingest via the site-wide
+lists only.
 
 Run modes:
     - As a module: ingest_snapshot() discovers sites, queries in parallel,
@@ -19,9 +22,8 @@ Run modes:
     - As a script: python netbox_dashboard_ingest.py runs one ingestion and
       prints the summary.
 
-Reuses from Source_count_Netbox: `_graphql_request`, `_graphql_with_retry`
-(transient NetBox errors), interface-type labels, `_iface_label`, and
-`_test_netbox_reachable`.
+Reuses from Source_count_Netbox: `_graphql_paginated`, `_graphql_with_retry`
+(transient NetBox errors), `_iface_label`, and `_test_netbox_reachable`.
 """
 
 from __future__ import annotations
@@ -39,10 +41,7 @@ import psycopg2.extras
 
 from atlas_data_loader import managed_connection
 from Source_count_Netbox import (
-    GRAPHQL_PAGE_SIZE,
-    INTERFACE_TYPE_LABELS,
     _graphql_paginated,
-    _graphql_request,
     _graphql_with_retry,
     _iface_label,
     _test_netbox_reachable,
@@ -215,7 +214,7 @@ def _is_optic(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# GraphQL — per-location queries (3 calls per location to avoid pagination cap)
+# GraphQL — per-location queries (paginated lists per location)
 # ---------------------------------------------------------------------------
 
 def _build_location_devices_query(site_slug: str, location_slug: str, start: int, limit: int) -> str:
@@ -307,10 +306,13 @@ def _query_site(
     location_slugs: List[str],
     active_only: bool = True,
 ) -> Tuple[List[tuple], List[tuple], List[tuple]]:
-    """Query one site per-location to avoid NetBox's default pagination cap.
+    """Query one site per-location with paginated GraphQL lists.
 
-    Makes 3 GraphQL calls per location (devices, interfaces, optics), then 3
-    site-level calls to capture devices with no assigned location.
+    For each location slug: paginated device_list, interface_list, and
+    inventory_item_list. Then paginated site-wide passes for rows not already
+    covered by those per-location lists (typically devices without a modeled
+    location in the known_locs set).
+
     Returns (device_rows, interface_rows, optic_rows).
     """
     log.info("Querying site %s (%d locations)", site_slug, len(location_slugs))
@@ -472,7 +474,8 @@ def _query_site(
     uoptic_list = _graphql_paginated("inventory_item_list", _build_site_optics)
 
     for d in udev_list:
-        if ((d.get("location") or {}).get("slug") or "") in known_locs:
+        loc_slug = (d.get("location") or {}).get("slug") or ""
+        if loc_slug in known_locs:
             continue  # already captured per-location
         status = d.get("status") or ""
         if active_only and status not in ACTIVE_STATUSES:
@@ -482,8 +485,12 @@ def _query_site(
             pos = int(float(raw_pos)) if raw_pos is not None and str(raw_pos).strip() else None
         except (TypeError, ValueError):
             pos = None
+        # Keep the device's real location slug. This pass only runs for rows
+        # not covered by per-location queries; blank slug here was mis-bucketing
+        # devices into a synthetic "" DH on the dashboard.
         device_rows.append((
-            site_slug, "",
+            site_slug,
+            loc_slug,
             (d.get("rack") or {}).get("name") or "",
             pos,
             d.get("name") or "",
@@ -498,7 +505,8 @@ def _query_site(
         if type_enum == "TYPE_VIRTUAL":
             continue
         dev = i.get("device") or {}
-        if ((dev.get("location") or {}).get("slug") or "") in known_locs:
+        dev_loc = (dev.get("location") or {}).get("slug") or ""
+        if dev_loc in known_locs:
             continue  # already captured per-location
         dev_status = dev.get("status") or ""
         if active_only and dev_status not in ACTIVE_STATUSES:
@@ -510,7 +518,8 @@ def _query_site(
             pos = None
         category, label = _iface_label(type_enum)
         interface_rows.append((
-            site_slug, "",
+            site_slug,
+            dev_loc,
             (dev.get("rack") or {}).get("name") or "",
             pos,
             dev.get("name") or "",
@@ -526,10 +535,12 @@ def _query_site(
         if not _is_optic(name):
             continue
         dev = item.get("device") or {}
-        if ((dev.get("location") or {}).get("slug") or "") in known_locs:
+        dev_loc = (dev.get("location") or {}).get("slug") or ""
+        if dev_loc in known_locs:
             continue  # already captured per-location
         optic_rows.append((
-            site_slug, "",
+            site_slug,
+            dev_loc,
             dev.get("name") or "",
             name,
             item.get("part_id") or "",
