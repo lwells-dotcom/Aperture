@@ -205,12 +205,7 @@ def build_query_params(
         if _ip:
             params["search_pattern"] = f"%{_escape_ilike(_ip)}%"
         else:
-            # "What IP does <device> have?" — no IP literal, search raw rows by the
-            # device/hostname instead (the ip_lookup template ILIKEs raw_row text).
-            if _device:
-                params["search_pattern"] = f"%{_escape_ilike(_device)}%"
-            else:
-                log.warning("ip_lookup: no IP or device extracted from %r, will reroute to general", question[:80])
+            log.warning("ip_lookup: no IP extracted from %r, will reroute to general", question[:80])
 
     if qtype == "upload_diff":
         upload_a, upload_b = ext.extract_upload_ids(question)

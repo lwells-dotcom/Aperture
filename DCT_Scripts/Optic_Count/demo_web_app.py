@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import re
@@ -547,6 +546,18 @@ def index():
   </div>
 
 <script>
+  function appPath(path) {
+    const match = window.location.pathname.match(/^(\/canvas-apps\/[^/]+)/);
+    const base = match ? match[1] : '';
+    if (!path) return base || '/';
+    if (/^[a-z]+:\/\//i.test(path)) return path;
+    const normalized = path.startsWith('/') ? path : '/' + path;
+    if (base && (normalized === base || normalized.startsWith(base + '/'))) return normalized;
+    return base ? base + normalized : normalized;
+  }
+
+  const apiPath = appPath;
+
   let token = null;
   let latestControlsText = '';
 
@@ -597,7 +608,7 @@ def index():
   }
 
   async function verify() {
-    const res = await fetch('/api/demo-verify-pin', {
+    const res = await fetch(apiPath('/api/demo-verify-pin'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ username: document.getElementById('username').value, pin: document.getElementById('pin').value })
@@ -617,7 +628,7 @@ def index():
     if (!fileInput.files.length) { alert('Select a file first'); return; }
     const form = new FormData();
     form.append('file', fileInput.files[0]);
-    const res = await fetch('/api/upload-count', {
+    const res = await fetch(apiPath('/api/upload-count'), {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token },
       body: form
@@ -672,7 +683,7 @@ def index():
   async function askAi() {
     if (!token) { alert('Verify first'); return; }
     const q = document.getElementById('question').value;
-    const res = await fetch('/api/sheet-qa', {
+    const res = await fetch(apiPath('/api/sheet-qa'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

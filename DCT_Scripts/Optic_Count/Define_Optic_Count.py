@@ -68,7 +68,7 @@ def _cached_excel_file(filepath):
     """Return a pd.ExcelFile, reusing a cached instance when possible."""
     key = os.path.realpath(filepath)
     if key not in _XLS_CACHE:
-        _XLS_CACHE[key] = pd.ExcelFile(filepath, engine="openpyxl")
+        _XLS_CACHE[key] = pd.ExcelFile(filepath, engine="calamine")
     return _XLS_CACHE[key]
 
 
@@ -351,8 +351,8 @@ def count_roce(input_file, sort_by_status=False):
     z_string = 'Z'
 
     for roce_sheet_name, roce_df in roce_df_dict.items():
-        roce_occupied_ports_in = []
-        roce_occupied_ports_not = []
+        roce_occupied_ports_in = set()
+        roce_occupied_ports_not = set()
         if "backup" not in roce_sheet_name.lower():
             status_col = None
             if sort_by_status:
@@ -396,10 +396,7 @@ def check_if_breakout_port_occupied(loc, port,breakout_ports_input):
 
 def check_if_roce_port_occupied(loc, port, connector, ports_input):
     fullname = str(loc) + str(port) + str(connector)
-    for occupied_port in ports_input:
-        if fullname == occupied_port:
-            return True
-    return False
+    return fullname in ports_input
 
 # Sanitize values read from untrusted Excel cells before storing or displaying them.
 # Strips leading formula-injection characters (=, +, -, @) that Excel would execute
@@ -471,7 +468,7 @@ def process_roce_row(row, roce_occupied_ports_in, optic_list_to_return_in, port,
     if str(row[side + '-SIDE-DNS-NAME']) != "nan" and str(row[side + '-OPTIC']) != "nan":
         if not check_if_roce_port_occupied(row[side + '-LOC:CAB:RU'], port, row[side + '-CONNECTOR'], roce_occupied_ports_in):
             put_optic_in_list(optic_list_to_return_in, str(row[side + '-OPTIC']))
-            roce_occupied_ports_in.append(str(row[side + '-LOC:CAB:RU']) + port + str(row[side + '-CONNECTOR']))
+            roce_occupied_ports_in.add(str(row[side + '-LOC:CAB:RU']) + port + str(row[side + '-CONNECTOR']))
 
 def process_cutsheet_row(row,breakout_ports_in, optic_list_to_return_in, side ):
     # Link does not have Breakout on A side and has an optic

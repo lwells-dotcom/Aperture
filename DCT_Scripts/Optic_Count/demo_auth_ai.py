@@ -1,6 +1,3 @@
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -48,94 +45,17 @@ def _load_local_env() -> None:
 _load_local_env()
 
 
-TOKEN_TTL_SECONDS = int(os.getenv("DEMO_TOKEN_TTL_SECONDS", "900"))
-TOKEN_SECRET = os.getenv("DEMO_TOKEN_SECRET", "").encode("utf-8")
-DEMO_PIN = os.getenv("DEMO_VERIFY_PIN", "123456")
 SOX_ALWAYS_ON = os.getenv("SOX_ALWAYS_ON", "0").strip() == "1"
 
-
-def _require_token_secret():
-    if not TOKEN_SECRET:
-        raise RuntimeError("DEMO_TOKEN_SECRET must be set in .env (use a 32-byte hex string)")
-
-_require_token_secret()
 _SOX_SECTION_CACHE = None
 
 
-def _b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
-
-
-def _b64url_decode(raw: str) -> bytes:
-    padding = "=" * (-len(raw) % 4)
-    return base64.urlsafe_b64decode(raw + padding)
-
-
-def verify_demo_pin(pin: str) -> bool:
-    # Use compare_digest to prevent timing attacks
-    return hmac.compare_digest(str(pin).strip(), DEMO_PIN)
-
-
-def create_demo_token(username: str) -> str:
-    _require_token_secret()
-    now = int(time.time())
-    payload = {
-        "sub": username,
-        "iat": now,
-        "exp": now + TOKEN_TTL_SECONDS,
-        "scope": ["sheet:qa"],
-    }
-    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    signature = hmac.new(TOKEN_SECRET, payload_bytes, hashlib.sha256).hexdigest()
-
-    payload_b64 = _b64url_encode(payload_bytes)
-    return f"{payload_b64}.{signature}"
-
-
-def parse_and_validate_demo_token(token_json: str) -> Dict[str, Any]:
-    _require_token_secret()
-    payload_b64 = None
-    provided_sig = None
-
-    # Preferred compact format: "<payload_b64>.<hex_signature>"
-    if "." in token_json and "{" not in token_json:
-        parts = token_json.split(".", 1)
-        if len(parts) == 2:
-            payload_b64, provided_sig = parts
-
-    # Backward-compatible fallback for older JSON token format.
-    if not payload_b64 or not provided_sig:
-        token_obj = json.loads(token_json)
-        payload_b64 = token_obj.get("payload")
-        provided_sig = token_obj.get("sig")
-        if not payload_b64 or not provided_sig:
-            raise ValueError("Invalid token format")
-
-    payload_bytes = _b64url_decode(payload_b64)
-    expected_sig = hmac.new(TOKEN_SECRET, payload_bytes, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(provided_sig, expected_sig):
-        raise ValueError("Invalid token signature")
-
-    payload = json.loads(payload_bytes.decode("utf-8"))
-    if int(time.time()) > int(payload.get("exp", 0)):
-        raise ValueError("Token expired")
-    if "sheet:qa" not in payload.get("scope", []):
-        raise ValueError("Token missing required scope")
-
-    return payload
-
-
 _PROMPT_INJECT_RE = re.compile(
-    r"(?i)(ignore|forget|disregard|override|bypass)\s+(all\s+)?"
-    r"(previous|prior|above|your|my|the|these|those|system)?\s*"
-    r"(instructions?|context|rules?|prompts?|system|constraints?|guidelines?)"
+    r"(?i)(ignore|forget|disregard)\s+(all\s+)?(previous|prior|above)\s+"
+    r"(instructions?|context|rules?|prompts?|system)"
     r"|you\s+are\s+now\s+"
     r"|<\s*(system|user|assistant)\s*>"
-    r"|\n\n###"
-    r"|act\s+as\s+if"
-    r"|pretend\s+(you|to\s+be)"
-    r"|new\s+instructions?"
-    r"|jailbreak",
+    r"|\\n\\n###",
 )
 
 _MAX_CELL_LEN = 500
@@ -874,16 +794,3 @@ def ask_grounded(question: str, sheet_context: Dict[str, Any]) -> Dict[str, Any]
     return _call_openai(messages, model, openai_key)
 
 
-def qa_with_token(token_json: str, question: str, sheet_context: Dict[str, Any]) -> Dict[str, Any]:
-    claims = parse_and_validate_demo_token(token_json)
-    result = ask_grounded(question, sheet_context)
-    return {
-        "user": claims.get("sub"),
-        "answer": result.get("answer", ""),
-        "timestamp": int(time.time()),
-        "model": result.get("model", ""),
-        "provider": result.get("provider", ""),
-        "input_tokens": result.get("input_tokens", 0),
-        "output_tokens": result.get("output_tokens", 0),
-        "elapsed_seconds": result.get("elapsed_seconds", 0),
-    }

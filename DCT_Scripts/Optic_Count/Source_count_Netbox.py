@@ -1,4 +1,5 @@
 import csv
+import io
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ log = logging.getLogger(__name__)
 
 NETBOX_URL = "https://coreweave.cloud.netboxapp.com"
 NETBOX_TOKEN = os.getenv("NETBOX_API_TOKEN", "").strip().strip('"').strip("'")
-DOWNLOADS_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
+DOWNLOADS_DIR = os.getenv("NETBOX_CSV_DIR", os.path.join(os.path.expanduser("~"), "Downloads"))
 
 INTERFACE_TYPE_LABELS = {
     "TYPE_VIRTUAL": ("Virtual", "Virtual"),
@@ -156,6 +157,16 @@ def _graphql_request(query, timeout=600):
     )
     with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _netbox_auth_error(e):
+    """Return a clear user-facing message if e is a 401/403, else None."""
+    if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+        return (
+            "Error: NetBox API token is expired or invalid. "
+            "Rotate NETBOX_API_TOKEN in .env and restart."
+        )
+    return None
 
 
 def _graphql_with_retry(query, timeout=600, attempts=4, base_delay=1.5):
@@ -423,49 +434,42 @@ def get_site_inventory(site_name, output_queue, active_only=True, include_optic_
             output_queue.put("\n".join(lines) + "\n")
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            csv_files = []
 
-            summary_filename = os.path.join(DOWNLOADS_DIR, f"netbox_{site_slug}_{timestamp}.csv")
-            try:
-                with open(summary_filename, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["Section", "Category", "Name", "Count"])
-                    writer.writerow(["Meta", "", "Site slug", site_slug])
-                    writer.writerow(["Meta", "", "Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-                    writer.writerow([])
-                    for model, count in sorted(device_type_counts.items(), key=lambda x: x[1], reverse=True):
-                        writer.writerow(["Devices", "Device Model", model, count])
-                    writer.writerow([])
-                    for enum_val, count in sorted(interface_type_counts.items(), key=lambda x: x[1], reverse=True):
-                        category, label = _iface_label(enum_val)
-                        writer.writerow(["Interfaces", category, label, count])
-                output_queue.put(f"\nSummary saved to: {summary_filename}\n")
-            except OSError as e:
-                output_queue.put(f"\nCould not save summary file: {e}\n")
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(["Section", "Category", "Name", "Count"])
+            writer.writerow(["Meta", "", "Site slug", site_slug])
+            writer.writerow(["Meta", "", "Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+            writer.writerow([])
+            for model, count in sorted(device_type_counts.items(), key=lambda x: x[1], reverse=True):
+                writer.writerow(["Devices", "Device Model", model, count])
+            writer.writerow([])
+            for enum_val, count in sorted(interface_type_counts.items(), key=lambda x: x[1], reverse=True):
+                category, label = _iface_label(enum_val)
+                writer.writerow(["Interfaces", category, label, count])
+            csv_files.append({"name": f"netbox_{site_slug}_{timestamp}.csv", "content": buf.getvalue()})
 
-            detail_filename = os.path.join(DOWNLOADS_DIR, f"netbox_{site_slug}_{timestamp}_devices.csv")
-            try:
-                with open(detail_filename, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["Device Name", "Model", "Serial Number", "Facility", "Room", "Rack", "U Position", "Status"])
-                    for dev_name, model, serial, facility, room, rack, u_pos, status in sorted(device_rows, key=lambda x: x[0]):
-                        writer.writerow([dev_name, model, serial, facility, room, rack, u_pos, status])
-                output_queue.put(f"Device detail saved to: {detail_filename}\n")
-            except OSError as e:
-                output_queue.put(f"\nCould not save device detail file: {e}\n")
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(["Device Name", "Model", "Serial Number", "Facility", "Room", "Rack", "U Position", "Status"])
+            for dev_name, model, serial, facility, room, rack, u_pos, status in sorted(device_rows, key=lambda x: x[0]):
+                writer.writerow([dev_name, model, serial, facility, room, rack, u_pos, status])
+            csv_files.append({"name": f"netbox_{site_slug}_{timestamp}_devices.csv", "content": buf.getvalue()})
 
             if include_optic_locations and interface_rows:
-                optics_filename = os.path.join(DOWNLOADS_DIR, f"netbox_{site_slug}_{timestamp}_optics.csv")
-                try:
-                    with open(optics_filename, "w", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerow(["Switch Name", "Interface Name", "Optic Type", "Facility", "Room", "Rack", "U Position", "Status", "Interface Location"])
-                        for row in sorted(interface_rows, key=lambda x: (_natural_key(x[0]), _natural_key(x[1]))):
-                            writer.writerow(list(row))
-                    output_queue.put(f"Optic locations saved to: {optics_filename}\n")
-                except OSError as e:
-                    output_queue.put(f"\nCould not save optics file: {e}\n")
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(["Switch Name", "Interface Name", "Optic Type", "Facility", "Room", "Rack", "U Position", "Status", "Interface Location"])
+                for row in sorted(interface_rows, key=lambda x: (_natural_key(x[0]), _natural_key(x[1]))):
+                    writer.writerow(list(row))
+                csv_files.append({"name": f"netbox_{site_slug}_{timestamp}_optics.csv", "content": buf.getvalue()})
 
-        except (urllib.error.URLError, urllib.error.HTTPError, RuntimeError) as e:
+            output_queue.put({"_type": "csv_ready", "files": csv_files})
+
+        except urllib.error.HTTPError as e:
+            output_queue.put((_netbox_auth_error(e) or f"Query failed: {e}") + "\n")
+        except (urllib.error.URLError, RuntimeError) as e:
             output_queue.put(f"Query failed: {e}\n")
     finally:
         output_queue.put(None)
@@ -494,7 +498,11 @@ def get_all_sites_inventory(output_queue, active_only=True, include_optic_locati
         all_sites = sorted(
             s["slug"] for s in site_body.get("data", {}).get("site_list", []) if s.get("slug")
         )
-    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+    except urllib.error.HTTPError as e:
+        output_queue.put((_netbox_auth_error(e) or f"Failed to fetch site list: {e}") + "\n")
+        output_queue.put(None)
+        return
+    except urllib.error.URLError as e:
         output_queue.put(f"Failed to fetch site list: {e}\n")
         output_queue.put(None)
         return
@@ -530,8 +538,12 @@ def get_all_sites_inventory(output_queue, active_only=True, include_optic_locati
                     f"{sum(dev_counts.values())} devices, "
                     f"{sum(iface_counts.values())} interfaces\n"
                 )
-            except (urllib.error.URLError, urllib.error.HTTPError) as e:
-                output_queue.put(f"[{progress}/{total_sites}] ERROR on {site_name}: {e} — will retry\n")
+            except urllib.error.HTTPError as e:
+                auth_msg = _netbox_auth_error(e)
+                if auth_msg:
+                    output_queue.put(f"[{progress}/{total_sites}] {auth_msg}\n")
+                else:
+                    output_queue.put(f"[{progress}/{total_sites}] ERROR on {site_name}: {e} — will retry\n")
                 failed_sites.append(site_name)
                 site_devices[site_name] = {}
                 site_device_rows[site_name] = []
@@ -597,54 +609,46 @@ def get_all_sites_inventory(output_queue, active_only=True, include_optic_locati
 
         output_queue.put("\n".join(lines))
 
-        summary_filename = os.path.join(DOWNLOADS_DIR, f"netbox_ALL_SITES_count_{timestamp}.csv")
-        try:
-            with open(summary_filename, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Site", "Section", "Category", "Name", "Count"])
-                writer.writerow(["", "Meta", "", "Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-                writer.writerow([])
-                for site_name in all_sites:
-                    for model, count in sorted(site_devices.get(site_name, {}).items(), key=lambda x: x[1], reverse=True):
-                        writer.writerow([site_name, "Devices", "Device Model", model, count])
-                    for enum_val, count in sorted(site_ifaces.get(site_name, {}).items(), key=lambda x: x[1], reverse=True):
-                        category, label = _iface_label(enum_val)
-                        writer.writerow([site_name, "Interfaces", category, label, count])
-                    writer.writerow([])
-                writer.writerow([])
-                for model, count in sorted(combined_devices.items(), key=lambda x: x[1], reverse=True):
-                    writer.writerow(["Full Count", "Devices", "Device Model", model, count])
-                for enum_val, count in sorted(combined_ifaces.items(), key=lambda x: x[1], reverse=True):
-                    category, label = _iface_label(enum_val)
-                    writer.writerow(["Full Count", "Interfaces", category, label, count])
-            output_queue.put(f"\nSummary saved to: {summary_filename}\n")
-        except OSError as e:
-            output_queue.put(f"\nCould not save summary file: {e}\n")
+        csv_files = []
 
-        detail_filename = os.path.join(DOWNLOADS_DIR, f"netbox_ALL_SITES_{timestamp}_devices.csv")
-        try:
-            with open(detail_filename, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Site", "Device Name", "Model", "Serial Number", "Facility", "Room", "Rack", "U Position", "Status"])
-                for site_name in all_sites:
-                    for dev_name, model, serial, facility, room, rack, u_pos, status in sorted(site_device_rows.get(site_name, []), key=lambda x: x[0]):
-                        writer.writerow([site_name, dev_name, model, serial, facility, room, rack, u_pos, status])
-            output_queue.put(f"Device detail saved to: {detail_filename}\n")
-        except OSError as e:
-            output_queue.put(f"\nCould not save device detail file: {e}\n")
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["Site", "Section", "Category", "Name", "Count"])
+        writer.writerow(["", "Meta", "", "Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        writer.writerow([])
+        for site_name in all_sites:
+            for model, count in sorted(site_devices.get(site_name, {}).items(), key=lambda x: x[1], reverse=True):
+                writer.writerow([site_name, "Devices", "Device Model", model, count])
+            for enum_val, count in sorted(site_ifaces.get(site_name, {}).items(), key=lambda x: x[1], reverse=True):
+                category, label = _iface_label(enum_val)
+                writer.writerow([site_name, "Interfaces", category, label, count])
+            writer.writerow([])
+        writer.writerow([])
+        for model, count in sorted(combined_devices.items(), key=lambda x: x[1], reverse=True):
+            writer.writerow(["Full Count", "Devices", "Device Model", model, count])
+        for enum_val, count in sorted(combined_ifaces.items(), key=lambda x: x[1], reverse=True):
+            category, label = _iface_label(enum_val)
+            writer.writerow(["Full Count", "Interfaces", category, label, count])
+        csv_files.append({"name": f"netbox_ALL_SITES_count_{timestamp}.csv", "content": buf.getvalue()})
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["Site", "Device Name", "Model", "Serial Number", "Facility", "Room", "Rack", "U Position", "Status"])
+        for site_name in all_sites:
+            for dev_name, model, serial, facility, room, rack, u_pos, status in sorted(site_device_rows.get(site_name, []), key=lambda x: x[0]):
+                writer.writerow([site_name, dev_name, model, serial, facility, room, rack, u_pos, status])
+        csv_files.append({"name": f"netbox_ALL_SITES_{timestamp}_devices.csv", "content": buf.getvalue()})
 
         if include_optic_locations:
-            optics_filename = os.path.join(DOWNLOADS_DIR, f"netbox_ALL_SITES_{timestamp}_optics.csv")
-            try:
-                with open(optics_filename, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["Site", "Switch Name", "Interface Name", "Optic Type", "Facility", "Room", "Rack", "U Position", "Status", "Interface Location"])
-                    for site_name in all_sites:
-                        for row in sorted(site_iface_rows.get(site_name, []), key=lambda x: (_natural_key(x[0]), _natural_key(x[1]))):
-                            writer.writerow([site_name] + list(row))
-                output_queue.put(f"Optic locations saved to: {optics_filename}\n")
-            except OSError as e:
-                output_queue.put(f"\nCould not save optics file: {e}\n")
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(["Site", "Switch Name", "Interface Name", "Optic Type", "Facility", "Room", "Rack", "U Position", "Status", "Interface Location"])
+            for site_name in all_sites:
+                for row in sorted(site_iface_rows.get(site_name, []), key=lambda x: (_natural_key(x[0]), _natural_key(x[1]))):
+                    writer.writerow([site_name] + list(row))
+            csv_files.append({"name": f"netbox_ALL_SITES_{timestamp}_optics.csv", "content": buf.getvalue()})
+
+        output_queue.put({"_type": "csv_ready", "files": csv_files})
     finally:
         output_queue.put(None)
 

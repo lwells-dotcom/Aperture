@@ -102,15 +102,25 @@ def _get_pool() -> ThreadedConnectionPool:
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                _pool = ThreadedConnectionPool(
-                    minconn=1,
-                    maxconn=int(os.getenv("DB_POOL_MAX", "10")),
-                    host=os.getenv("DB_HOST", "localhost"),
-                    port=int(os.getenv("DB_PORT", "5432")),
-                    dbname=os.getenv("DB_NAME", "atlas"),
-                    user=os.getenv("DB_USER", "atlas"),
-                    password=os.getenv("DB_PASSWORD", "atlas"),
-                )
+                database_url = os.getenv("DATABASE_URL")
+                if database_url:
+                    # Canvas injects DATABASE_URL; psycopg2 accepts it directly
+                    _pool = ThreadedConnectionPool(
+                        minconn=1,
+                        maxconn=int(os.getenv("DB_POOL_MAX", "10")),
+                        dsn=database_url,
+                    )
+                else:
+                    # Local dev / Docker Compose: individual vars
+                    _pool = ThreadedConnectionPool(
+                        minconn=1,
+                        maxconn=int(os.getenv("DB_POOL_MAX", "10")),
+                        host=os.getenv("DB_HOST", "localhost"),
+                        port=int(os.getenv("DB_PORT", "5432")),
+                        dbname=os.getenv("DB_NAME", "atlas"),
+                        user=os.getenv("DB_USER", "atlas"),
+                        password=os.getenv("DB_PASSWORD", "atlas"),
+                    )
     return _pool
 
 
@@ -530,13 +540,20 @@ def load_cutsheet(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int:
             rows,
             page_size=500,
         )
-        result = cur.fetchone()
-        n_inserted = result[0] if result else len(rows)
+        # NOTE: execute_values batches the statement once per page_size rows, so
+        # cur.fetchone() only sees the LAST page's "SELECT count(*) FROM ins"
+        # (≤page_size). Count this upload's actual rows instead for a true total.
+        cur.execute(
+            "SELECT count(*) FROM cutsheet_connections WHERE upload_id = %s",
+            (upload_id,),
+        )
+        n_inserted = cur.fetchone()[0]
         n_dupes = len(rows) - n_inserted
         if n_dupes > 0:
             log.warning(
-                "load_cutsheet: %d duplicate rows skipped "
-                "(deduped by cable_id or port identity)", n_dupes,
+                "load_cutsheet: %d of %d source rows skipped as duplicates "
+                "(deduped by cable_id or port identity); %d inserted",
+                n_dupes, len(rows), n_inserted,
             )
 
     return n_inserted
@@ -764,10 +781,17 @@ def refresh_views(conn) -> None:
 # High-level load function
 # ---------------------------------------------------------------------------
 
-def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str, Any]:
+def load_file(file_path: str, site_code: str, uploaded_by: str = "",
+              deactivate_prior: bool = True) -> Dict[str, Any]:
     """
     Full load pipeline: read file, canonicalize, insert into Postgres,
     refresh views.  Returns summary dict.
+
+    deactivate_prior: when True (default) soft-delete previous active uploads for
+    this site before inserting (single-cutsheet "latest version wins" behavior).
+    Set False to ADD this cutsheet to the site alongside existing active uploads
+    (multi-cutsheet batch: 4 sheets of one site queried together). The caller is
+    responsible for deactivating once at the start of a batch.
     """
     try:
         sha256 = _file_hash(file_path)
@@ -917,16 +941,19 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
 
             # B9: Soft-delete previous uploads for this site to prevent
             # double-counting in materialized views. Preserves audit trail.
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE cutsheet_uploads SET is_active = FALSE "
-                    "WHERE site_id = %s AND is_active = TRUE",
-                    (site_id,),
-                )
-                deactivated = cur.rowcount
-            if deactivated:
-                log.info("Deactivated %d previous upload(s) for site %s",
-                         deactivated, site_code)
+            # Skipped when deactivate_prior=False so a multi-cutsheet batch can
+            # ADD sheets to the same site instead of replacing the prior one.
+            if deactivate_prior:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE cutsheet_uploads SET is_active = FALSE "
+                        "WHERE site_id = %s AND is_active = TRUE",
+                        (site_id,),
+                    )
+                    deactivated = cur.rowcount
+                if deactivated:
+                    log.info("Deactivated %d previous upload(s) for site %s",
+                             deactivated, site_code)
 
             upload_id = create_upload(
                 conn, site_id, os.path.basename(file_path), uploaded_by,
@@ -984,6 +1011,20 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
             # scoped to the backfill transaction only and cannot block new uploads.
             conn.commit()
 
+        # Refresh planner statistics immediately after the bulk load. execute_values
+        # leaves cutsheet_connections/host_inventory with stale reltuples, which makes
+        # the backfill_device_roles join pick a pathological plan as the DB grows
+        # (measured: 349s vs 3s for the same 42k-row backfill on a 300k-row DB).
+        # ANALYZE is cheap (~0.4s) and also keeps downstream user-query plans healthy.
+        try:
+            with managed_connection() as _ac:
+                with _ac.cursor() as _cur:
+                    _cur.execute("ANALYZE cutsheet_connections")
+                    _cur.execute("ANALYZE host_inventory")
+                _ac.commit()
+        except Exception as exc:
+            log.warning("ANALYZE after load failed (non-fatal): %s", exc)
+
         # H8: Backfill device roles in a separate transaction after the main commit.
         # Running this inside the main transaction held locks on cutsheet_connections
         # that could outlive the container process and block all subsequent uploads.
@@ -1019,4 +1060,164 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
         }
     except Exception as exc:
         log.exception("load_file failed")
+        return {"ok": False, "error": _safe_error(exc)}
+
+
+def _read_cutsheet_frames(file_path: str):
+    """Read a workbook and return (cutsheet_df, host_df_or_None, detected_profile).
+
+    Picks the cutsheet tab by name first, then by post-canonicalization schema
+    check (so RoCE sheets named e.g. 'DH202 NODE TO TIER-0' are found too).
+    Used by load_files() to pull each sheet of a multi-cutsheet batch.
+    """
+    xls = pd.ExcelFile(file_path, engine="calamine")
+    active = [s for s in xls.sheet_names if not _should_skip_sheet(s)]
+
+    def _valid(sample) -> bool:
+        if not HAS_PROFILES:
+            cu = {str(c).strip().upper() for c in sample.columns}
+            return any("OPTIC" in c for c in cu)
+        try:
+            t, _ = canonicalize(sample.copy(), sheet_type="cutsheet")
+            return not (_REQUIRED_CUTSHEET_COLS - set(t.columns))
+        except Exception:
+            return False
+
+    chosen = None
+    for sn in active:  # name match first (fast path)
+        if sn.strip().casefold() in ("cutsheet", "connections", "cutsheet_clean"):
+            if _valid(pd.read_excel(xls, sheet_name=sn, nrows=5, engine="calamine")):
+                chosen = sn
+                break
+    if not chosen:  # heuristic schema scan
+        for sn in active:
+            if _valid(pd.read_excel(xls, sheet_name=sn, nrows=5, engine="calamine")):
+                chosen = sn
+                break
+    if not chosen:
+        raise ValueError(
+            f"No cutsheet-like tab found in '{os.path.basename(file_path)}' "
+            f"(checked {len(active)} tabs)."
+        )
+
+    cut_df = pd.read_excel(xls, sheet_name=chosen, engine="calamine")
+    detected_profile = None
+    if HAS_PROFILES:
+        from cutsheet_profiles import detect_profile
+        detected_profile, _ = detect_profile(cut_df)
+
+    host_df = None
+    for sn in active:
+        if sn.strip().casefold() in ("site-hosts", "hosts", "host inventory", "devices"):
+            host_df = pd.read_excel(xls, sheet_name=sn, engine="calamine")
+            break
+    return cut_df, host_df, detected_profile
+
+
+def load_files(file_paths, site_code: str, uploaded_by: str = "") -> Dict[str, Any]:
+    """
+    Load MULTIPLE cutsheets into a SINGLE upload for one site, so all sheets are
+    queried together (the query path is upload_id-scoped; build_postgres_context
+    defaults upload_id=None to the latest upload, so multiple sheets must share
+    one upload_id to be visible at once). Prior active uploads for the site are
+    deactivated once. ANALYZE + role backfill + view refresh run once at the end.
+
+    Use this for the GUI multi-file batch (e.g. 4 US-LZL01 cutsheets). For a
+    single cutsheet with "latest version wins" semantics, use load_file().
+    """
+    file_paths = list(file_paths)
+    if not file_paths:
+        return {"ok": False, "error": "no files provided"}
+    try:
+        with managed_connection() as conn:
+            site_id = upsert_site(conn, site_code)
+            # Deactivate prior uploads for the site once (whole batch replaces).
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE cutsheet_uploads SET is_active = FALSE "
+                    "WHERE site_id = %s AND is_active = TRUE",
+                    (site_id,),
+                )
+
+            agg_profile = None
+            total_rows = 0
+            frames = []
+            for fp in file_paths:
+                cut_df, host_df, prof = _read_cutsheet_frames(fp)
+                if prof is not None and agg_profile is None:
+                    agg_profile = prof
+                total_rows += len(cut_df)
+                frames.append((os.path.basename(fp), cut_df, host_df, prof))
+
+            upload_id = create_upload(
+                conn, site_id,
+                "; ".join(name for name, _, _, _ in frames),
+                uploaded_by,
+                profile_dict=profile_to_dict(agg_profile) if HAS_PROFILES and agg_profile else None,
+                row_count=total_rows,
+                file_hash=_file_hash(file_paths[0]),
+            )
+
+            per_file = []
+            total_conns = 0
+            total_hosts = 0
+            for name, cut_df, host_df, prof in frames:
+                conns = load_cutsheet(conn, upload_id, site_id, cut_df)
+                hosts = 0
+                if host_df is not None:
+                    with conn.cursor() as _cur:
+                        _cur.execute("SAVEPOINT sp_h")
+                    try:
+                        hosts = load_site_hosts(conn, upload_id, site_id, host_df, profile=prof)
+                        with conn.cursor() as _cur:
+                            _cur.execute("RELEASE SAVEPOINT sp_h")
+                    except Exception as exc:  # noqa: BLE001
+                        with conn.cursor() as _cur:
+                            _cur.execute("ROLLBACK TO SAVEPOINT sp_h")
+                        log.warning("Host load failed for %s: %s", name, exc)
+                total_conns += conns
+                total_hosts += hosts
+                per_file.append({"file": name, "connections": conns, "hosts": hosts})
+            conn.commit()
+
+        # R41: refresh stats before the stats-sensitive backfill join.
+        try:
+            with managed_connection() as _ac:
+                with _ac.cursor() as _cur:
+                    _cur.execute("ANALYZE cutsheet_connections")
+                    _cur.execute("ANALYZE host_inventory")
+                _ac.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ANALYZE after batch load failed (non-fatal): %s", exc)
+
+        roles_backfilled = {"a_updated": 0, "z_updated": 0}
+        if total_hosts > 0:
+            try:
+                with managed_connection() as _bc:
+                    roles_backfilled = backfill_device_roles(_bc, upload_id, site_id)
+                    _bc.commit()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Role backfill failed (non-fatal): %s", exc)
+
+        def _bg_refresh():
+            try:
+                with managed_connection() as _conn:
+                    refresh_views(_conn)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("View refresh failed (background): %s", exc)
+        threading.Thread(target=_bg_refresh, daemon=True).start()
+
+        return {
+            "ok": True,
+            "site_id": site_id,
+            "site_code": site_code,
+            "upload_id": upload_id,
+            "connections_loaded": total_conns,
+            "hosts_loaded": total_hosts,
+            "roles_backfilled": roles_backfilled,
+            "files": per_file,
+            "profile": profile_to_dict(agg_profile) if HAS_PROFILES and agg_profile else None,
+        }
+    except Exception as exc:
+        log.exception("load_files failed")
         return {"ok": False, "error": _safe_error(exc)}

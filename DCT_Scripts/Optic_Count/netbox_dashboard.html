@@ -446,6 +446,18 @@
 </main>
 
 <script>
+function appPath(path) {
+  const match = window.location.pathname.match(/^(\/canvas-apps\/[^/]+)/);
+  const base = match ? match[1] : "";
+  if (!path) return base || "/";
+  if (/^[a-z]+:\/\//i.test(path)) return path;
+  const normalized = path.startsWith("/") ? path : "/" + path;
+  if (base && (normalized === base || normalized.startsWith(base + "/"))) return normalized;
+  return base ? base + normalized : normalized;
+}
+
+const apiPath = appPath;
+
 const REFRESH_MS = 60_000;
 const NUM = new Intl.NumberFormat();
 const TZ = "America/Chicago";
@@ -488,7 +500,7 @@ const fmtClockShort = (iso) => {
 async function fetchJSON(url, opts) {
   const sep = url.includes("?") ? "&" : "?";
   const fullUrl = currentSite ? url + sep + "site=" + encodeURIComponent(currentSite) : url;
-  const r = await fetch(fullUrl, opts);
+  const r = await fetch(apiPath(fullUrl), opts);
   if (!r.ok) throw new Error(url + " " + r.status);
   return r.json();
 }
@@ -784,7 +796,7 @@ document.getElementById("refreshBtn").addEventListener("click", async (e) => {
   const original = span.textContent;
   span.textContent = "Refreshing…";
   try {
-    await fetch("/api/dashboard/refresh", { method: "POST" });
+    await fetch(apiPath("/api/dashboard/refresh"), { method: "POST" });
     await loadAll();
   } catch (err) {
     console.error(err);
