@@ -32,9 +32,14 @@ from flask import Blueprint, Response, jsonify, request
 
 from atlas_data_loader import managed_connection
 import netbox_dashboard_ingest as ingest
+import demo_auth_ai
 
 log = logging.getLogger(__name__)
 
+# The read-only GET endpoints below are intentionally left open (monitoring-style:
+# the dashboard is a passive view shell anyone on the network can load). Only the
+# mutating endpoint — POST /api/dashboard/refresh, which triggers an ingestion run —
+# requires a valid bearer token.
 netbox_dashboard_bp = Blueprint("netbox_dashboard", __name__)
 
 # Dashboard HTML lives next to this module so it can be edited without
@@ -538,7 +543,19 @@ def recent_snapshots():
 
 @netbox_dashboard_bp.post("/api/dashboard/refresh")
 def manual_refresh():
-    """Trigger a synchronous ingestion. Returns 202 with the result."""
+    """Trigger a synchronous ingestion. Returns 202 with the result.
+
+    Mutating endpoint — requires a valid bearer token (unlike the read-only GETs).
+    """
+    auth = request.headers.get("Authorization", "")
+    token = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") and " " in auth else None
+    if not token:
+        return jsonify({"error": "Missing bearer token"}), 401
+    try:
+        demo_auth_ai.parse_and_validate_demo_token(token)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 401
+
     try:
         result = ingest.ingest_snapshot()
         return jsonify({"ok": True, "result": result}), 202

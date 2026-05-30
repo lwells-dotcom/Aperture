@@ -247,6 +247,11 @@ def route_role_intent(ctx: QuestionContext) -> Optional[IntentResult]:
         # (e.g. "optics in the spine section" should be optic_count, not role_lookup)
         if _hits(ctx.token_set, OPTIC_WORDS) or ctx.has_optic_token:
             return None
+        # "spine"/"leaf" etc. double as section names. If section/completion words
+        # are present, defer to route_section_intent (e.g. "the SPINE section",
+        # "completion percentage for LEAF").
+        if _hits(ctx.token_set, SECTION_WORDS) or _hits(ctx.token_set, COMPLETION_WORDS):
+            return None
         signals = [ctx.extracted_role]
         if ctx.extracted_side:
             signals.append(f"{ctx.extracted_side}-side")
@@ -339,6 +344,12 @@ def route_location_intent(ctx: QuestionContext) -> Optional[IntentResult]:
         # Unambiguous data-hall + location pair: both fields explicitly present.
         # Route based on the intent signal carried by the remaining words.
         if ctx.extracted_data_hall:
+            # Defer to more-specific routers when their signals are present, so the
+            # data-hall scope does not swallow trend/cable-type questions.
+            if _hits(ctx.token_set, TREND_WORDS):
+                return None  # let route_trend_intent handle it
+            if _hits(ctx.token_set, CABLE_WORDS) and re.search(r"\bcable\s*types?\b", ctx.normalized):
+                return None  # let route_cable_type_intent handle it
             # Bare rack number (digits only, no colon) → prefer rack-level rollup
             if re.fullmatch(r"\d{1,4}", ctx.extracted_location):
                 return IntentResult("rack_summary", "high",
@@ -655,11 +666,15 @@ def route_section_intent(ctx: QuestionContext) -> Optional[IntentResult]:
                             "tiers represented/present/defined",
                             "section", ["tier_presence"])
 
-    # Named section + fail/completion words -> section_completion
-    if ctx.extracted_section and (fail_hits or completion_hits):
+    # Named section + fail/completion words -> section_completion.
+    # Accept a section-name filter (SPINE/LEAF/etc.) when no explicit "section"
+    # keyword is present, so "completion percentage for LEAF" routes here rather
+    # than falling through to general.
+    _section_name = ctx.extracted_section or ctx.extracted_section_filter
+    if _section_name and (fail_hits or completion_hits):
         return IntentResult("section_completion", "high",
-                            f"named section '{ctx.extracted_section}' + fail/completion words",
-                            "section", [ctx.extracted_section] + sorted(fail_hits | completion_hits))
+                            f"named section '{_section_name}' + fail/completion words",
+                            "section", [_section_name] + sorted(fail_hits | completion_hits))
 
     # Named section keywords (BACKBONE, OOB-FW, etc.) + connection/count context
     if ctx.extracted_section:
@@ -1071,9 +1086,10 @@ _ROUTER_CHAIN: List[Callable[[QuestionContext], Optional[IntentResult]]] = [
     route_trend_intent,          # after status/section so bare "cable status" wins, but "trend" overrides
     route_data_hall_intent,
     route_site_intent,
+    route_ip_intent,             # before node_compute/device: a hostname's model-like
+                                 # substring must not pre-empt an explicit IP lookup
     route_node_compute_intent,
     route_device_intent,
-    route_ip_intent,
 ]
 
 

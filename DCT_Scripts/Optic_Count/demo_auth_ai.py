@@ -126,11 +126,16 @@ def parse_and_validate_demo_token(token_json: str) -> Dict[str, Any]:
 
 
 _PROMPT_INJECT_RE = re.compile(
-    r"(?i)(ignore|forget|disregard)\s+(all\s+)?(previous|prior|above)\s+"
-    r"(instructions?|context|rules?|prompts?|system)"
+    r"(?i)(ignore|forget|disregard|override|bypass)\s+(all\s+)?"
+    r"(previous|prior|above|your|my|the|these|those|system)?\s*"
+    r"(instructions?|context|rules?|prompts?|system|constraints?|guidelines?)"
     r"|you\s+are\s+now\s+"
     r"|<\s*(system|user|assistant)\s*>"
-    r"|\\n\\n###",
+    r"|\n\n###"
+    r"|act\s+as\s+if"
+    r"|pretend\s+(you|to\s+be)"
+    r"|new\s+instructions?"
+    r"|jailbreak",
 )
 
 _MAX_CELL_LEN = 500

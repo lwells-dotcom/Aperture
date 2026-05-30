@@ -599,12 +599,12 @@ def stream_all_sites():
 @app.post("/api/buildsheet")
 def buildsheet():
     token = _bearer(request.headers.get("Authorization"))
-    claims = None
-    if token:
-        try:
-            claims = demo_auth_ai.parse_and_validate_demo_token(token)
-        except Exception:
-            claims = None
+    if not token:
+        return jsonify({"error": "Missing bearer token"}), 401
+    try:
+        claims = demo_auth_ai.parse_and_validate_demo_token(token)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 401
 
     if "cutsheet" not in request.files:
         return jsonify({"error": "'cutsheet' file is required"}), 400
@@ -660,6 +660,14 @@ def buildsheet():
 
 @app.post("/api/buildsheet/layout")
 def buildsheet_layout():
+    token = _bearer(request.headers.get("Authorization"))
+    if not token:
+        return jsonify({"error": "Missing bearer token"}), 401
+    try:
+        demo_auth_ai.parse_and_validate_demo_token(token)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 401
+
     if "cutsheet" not in request.files:
         return jsonify({"error": "'cutsheet' file is required"}), 400
     room = request.form.get("room", "").strip()
@@ -704,6 +712,14 @@ def buildsheet_layout():
 
 @app.post("/api/buildsheet/dh")
 def buildsheet_dh():
+    token = _bearer(request.headers.get("Authorization"))
+    if not token:
+        return jsonify({"error": "Missing bearer token"}), 401
+    try:
+        demo_auth_ai.parse_and_validate_demo_token(token)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 401
+
     if "cutsheet" not in request.files:
         return jsonify({"error": "'cutsheet' file is required"}), 400
 
@@ -1757,7 +1773,7 @@ function downloadCableMapCsv(type) {
     const q = document.getElementById('question').value.trim();
     if (!q) { alert('Enter a question.'); return; }
     document.getElementById('qaStatus').textContent = 'Thinking...';
-    const res = await fetch('/api/ask', {
+    const res = await _authFetch('/api/ask', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
       body: JSON.stringify({question: q})
