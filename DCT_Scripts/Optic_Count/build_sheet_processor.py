@@ -77,7 +77,9 @@ def _read_sheet(wb, sheet_name, col_map):
     if header_row is None:
         return []
 
-    headers = [_str(h).upper() for h in header_row]
+    # Normalise multi-line Excel headers (e.g. "A-BREAKOUT\nLOC:CAB:RU") to
+    # single-space form so they match the keys in CUTSHEET_COLS.
+    headers = [_str(h).upper().replace('\n', ' ').replace('\r', ' ') for h in header_row]
     col_indices = {}
     for col_name, field in col_map.items():
         key = col_name.upper()
@@ -334,6 +336,102 @@ def _lookup_elevation(wb, cab_type):
 
 
 # ---------------------------------------------------------------------------
+# Breakout-aware label expansion
+# ---------------------------------------------------------------------------
+
+def _expand_cable_labels(sorted_cables, perspective_side_fn, extra_internal_labels=None):
+    """Generate label strings, expanding A→C→Z breakout paths into separate lines.
+
+    When a cable has a-breakout-loc set, the same A-side port fans out across
+    multiple spreadsheet rows (one per Z-side connection through the breakout
+    panel).  This function emits:
+
+      1. "A-loc port A-port  →  breakout-panel-loc (breakout panel)"
+         — only once per unique A-side port (the physical A→panel cable).
+         If extra_internal_labels is provided, this label is appended there
+         instead of the main list — callers use this to route the A→panel leg
+         into the "inside this rack" section while panel→Z legs stay in
+         "cables leaving this rack".
+      2. "breakout-panel-loc port breakout-port  →  Z-loc port Z-port"
+         — one entry per fan-out row (each physical panel→Z cable), always
+         appended to the main labels list.
+
+    Non-breakout cables produce a single standard label each.
+
+    perspective_side_fn:  callable(cable) -> 'a' or 'z'
+    extra_internal_labels: optional list; when provided, A→panel labels are
+                           appended here so the caller can merge them into the
+                           internal (same-rack) label list.
+    """
+    labels = []
+    seen_a_keys: set = set()
+    seen_z_keys: set = set()
+
+    for cable in sorted_cables:
+        side = perspective_side_fn(cable)
+
+        if side == 'a' and cable.get('a_breakout_loc'):
+            a_loc      = cable.get('a_loc', '')
+            a_port     = cable.get('a_port', '')
+            bp_loc     = cable.get('a_breakout_loc', '')
+            bp_port    = cable.get('a_breakout_port', '')
+            z_loc      = cable.get('z_loc', '')
+            z_port     = cable.get('z_port', '')
+            cable_type = cable.get('cable_type', '')
+
+            # A → breakout panel: emit once per unique A-side port.
+            # The breakout panel is physically co-located with the A device, so
+            # this leg belongs in "inside this rack" — route to extra_internal_labels
+            # when the caller supplies that list.
+            a_key = a_loc + '\x00' + a_port
+            if a_key not in seen_a_keys:
+                seen_a_keys.add(a_key)
+                src   = f"{a_loc} port {a_port}"
+                dst   = f"{bp_loc} (breakout panel)"
+                parts = [f"{src}  →  {dst}"]
+                if cable_type:
+                    parts.append(f"Cable: {cable_type}")
+                label = '  |  '.join(parts)
+                if extra_internal_labels is not None:
+                    extra_internal_labels.append(label)
+                else:
+                    labels.append(label)
+
+            # breakout panel → Z: one entry per fan-out row, always in main list
+            labels.append(f"{bp_loc} port {bp_port}  →  {z_loc} port {z_port}")
+
+        elif side == 'z' and cable.get('z_breakout_loc'):
+            z_loc      = cable.get('z_loc', '')
+            z_port     = cable.get('z_port', '')
+            bp_loc     = cable.get('z_breakout_loc', '')
+            bp_port    = cable.get('z_breakout_port', '')
+            a_loc      = cable.get('a_loc', '')
+            a_port     = cable.get('a_port', '')
+            cable_type = cable.get('cable_type', '')
+
+            z_key = z_loc + '\x00' + z_port
+            if z_key not in seen_z_keys:
+                seen_z_keys.add(z_key)
+                src   = f"{z_loc} port {z_port}"
+                dst   = f"{bp_loc} (breakout panel)"
+                parts = [f"{src}  →  {dst}"]
+                if cable_type:
+                    parts.append(f"Cable: {cable_type}")
+                label = '  |  '.join(parts)
+                if extra_internal_labels is not None:
+                    extra_internal_labels.append(label)
+                else:
+                    labels.append(label)
+
+            labels.append(f"{bp_loc} port {bp_port}  →  {a_loc} port {a_port}")
+
+        else:
+            labels.append(_cable_label(cable, side))
+
+    return labels
+
+
+# ---------------------------------------------------------------------------
 # Main processor
 # ---------------------------------------------------------------------------
 
@@ -365,6 +463,47 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
 
     room_filter = _resolve_room_filter(cables_raw, hosts_by_loc, room_filter, rack_filter)
 
+    # -- Validate room and rack exist in cutsheet --
+    all_rooms = set()
+    rooms_in_filter = set()
+    racks_in_room = set()
+
+    for cable in cables_raw:
+        for loc_key in ('a_loc', 'z_loc'):
+            r, rk, _ = _parse_loc(cable.get(loc_key, ''))
+            if r:
+                all_rooms.add(r)
+                if _room_matches(r, room_filter):
+                    rooms_in_filter.add(r)
+                    if rk:
+                        racks_in_room.add(rk.lstrip('0') or '0')
+
+    for loc in hosts_by_loc:
+        r, rk, _ = _parse_loc(loc)
+        if r:
+            all_rooms.add(r)
+            if _room_matches(r, room_filter):
+                rooms_in_filter.add(r)
+                if rk:
+                    racks_in_room.add(rk.lstrip('0') or '0')
+
+    if not rooms_in_filter:
+        available = ', '.join(sorted(all_rooms)[:30])
+        raise ValueError(
+            f"Room '{room_input}' not found in the cutsheet. "
+            f"Available rooms: {available}"
+        )
+
+    rack_normalized = rack_filter.lstrip('0') or '0'
+    if rack_normalized not in racks_in_room:
+        racks_hint = ', '.join(
+            sorted(racks_in_room, key=lambda x: int(x) if x.isdigit() else 0)[:30]
+        )
+        raise ValueError(
+            f"Rack '{rack_input}' not found in room '{room_filter}'. "
+            f"Available racks: {racks_hint}"
+        )
+
     # -- Cab type from OVERHEAD + elevation from template --
     cab_type = _lookup_cab_type(cutsheet_path, rack_filter)
     if cab_type and template_path:
@@ -381,6 +520,10 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
     devices = {}
     optic_counts = defaultdict(int)
     optic_locations = []
+    # Breakout deduplication: track which A/Z ports have already had their
+    # optic counted so fan-out rows don't inflate the per-rack total.
+    _optic_a_seen: set = set()
+    _optic_z_seen: set = set()
 
     def _upsert_device(loc, ru, dns_name='', model='', status=''):
         if not loc:
@@ -425,11 +568,25 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
                 model=cable.get(f'{prefix}_model', ''))
 
         if a_in and cable.get('a_optic'):
-            optic_counts[cable['a_optic']] += 1
-            optic_locations.append({'location': a_loc, 'port': cable.get('a_port', ''), 'optic': cable['a_optic']})
+            if cable.get('a_breakout_loc'):
+                _a_key = a_loc + '\x00' + cable.get('a_port', '')
+                if _a_key not in _optic_a_seen:
+                    _optic_a_seen.add(_a_key)
+                    optic_counts[cable['a_optic']] += 1
+                    optic_locations.append({'location': a_loc, 'port': cable.get('a_port', ''), 'optic': cable['a_optic']})
+            else:
+                optic_counts[cable['a_optic']] += 1
+                optic_locations.append({'location': a_loc, 'port': cable.get('a_port', ''), 'optic': cable['a_optic']})
         if z_in and cable.get('z_optic'):
-            optic_counts[cable['z_optic']] += 1
-            optic_locations.append({'location': z_loc, 'port': cable.get('z_port', ''), 'optic': cable['z_optic']})
+            if cable.get('z_breakout_loc'):
+                _z_key = z_loc + '\x00' + cable.get('z_port', '')
+                if _z_key not in _optic_z_seen:
+                    _optic_z_seen.add(_z_key)
+                    optic_counts[cable['z_optic']] += 1
+                    optic_locations.append({'location': z_loc, 'port': cable.get('z_port', ''), 'optic': cable['z_optic']})
+            else:
+                optic_counts[cable['z_optic']] += 1
+                optic_locations.append({'location': z_loc, 'port': cable.get('z_port', ''), 'optic': cable['z_optic']})
 
     # -- Split internal vs cab-to-cab --
     internal   = [c for c in rack_cables if c['a_in_rack'] and c['z_in_rack']]
@@ -459,18 +616,25 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
     # Sort by RU then port (natural sort so port2 < port10 < port11)
     optic_locations.sort(key=lambda x: (_ru_sort(_parse_loc(x['location'])[2]), _natural_key(x['port'])))
 
-    # -- Generate label strings --
-    internal_labels = [
-        _cable_label(c, 'a') for c in sorted(internal,
-            key=lambda c: (-_ru_sort(_parse_loc(c.get('a_loc', ''))[2]), _natural_key(c.get('a_port', ''))))
-    ]
-    cab_to_cab_labels = [
-        _cable_label(c, 'a' if c['a_in_rack'] else 'z')
-        for c in sorted(cab_to_cab, key=lambda c: (
+    # -- Generate label strings (breakout cables expand to multiple lines) --
+    # Breakout A→panel legs are physically inside the rack even though the
+    # cable row's Z-loc is external.  Collect them separately so they can be
+    # merged into internal_labels rather than cab_to_cab_labels.
+    _breakout_internal: list = []
+    cab_to_cab_labels = _expand_cable_labels(
+        sorted(cab_to_cab, key=lambda c: (
             -_ru_sort(_parse_loc(c.get('a_loc', '') if c['a_in_rack'] else c.get('z_loc', ''))[2]),
             _natural_key(c.get('a_port', '') if c['a_in_rack'] else c.get('z_port', ''))
-        ))
-    ]
+        )),
+        lambda c: 'a' if c['a_in_rack'] else 'z',
+        extra_internal_labels=_breakout_internal,
+    )
+    internal_labels = _expand_cable_labels(
+        sorted(internal,
+               key=lambda c: (-_ru_sort(_parse_loc(c.get('a_loc', ''))[2]),
+                              _natural_key(c.get('a_port', '')))),
+        lambda c: 'a',
+    ) + _breakout_internal
 
     # -- Sort devices by RU descending (top of rack first) --
     sorted_devices = sorted(devices.values(), key=lambda d: _ru_sort(d['ru']), reverse=True)
@@ -493,10 +657,13 @@ def process_rack(cutsheet_path, template_path, room_input, rack_input):
         'optic_locations': optic_locations,
         'internal_cables': [_serialise_cable(c) for c in sorted(
             internal, key=lambda c: (-_ru_sort(_parse_loc(c.get('a_loc', ''))[2]), _natural_key(c.get('a_port', ''))))],
-        'cab_to_cab_cables': [_serialise_cable(c) for c in sorted(
-            cab_to_cab, key=lambda c: (
-                -_ru_sort(_parse_loc(c.get('a_loc', '') if c['a_in_rack'] else c.get('z_loc', ''))[2]),
-                _natural_key(c.get('a_port', '') if c['a_in_rack'] else c.get('z_port', ''))))],
+        'cab_to_cab_cables': [
+            dict(_serialise_cable(c), rack_side='a' if c['a_in_rack'] else 'z')
+            for c in sorted(
+                cab_to_cab, key=lambda c: (
+                    -_ru_sort(_parse_loc(c.get('a_loc', '') if c['a_in_rack'] else c.get('z_loc', ''))[2]),
+                    _natural_key(c.get('a_port', '') if c['a_in_rack'] else c.get('z_port', ''))))
+        ],
         'internal_labels':   internal_labels,
         'cab_to_cab_labels': cab_to_cab_labels,
     }

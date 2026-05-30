@@ -28,6 +28,14 @@ web:
   env:
     port: "5050"
     uploadDir: /app/uploads
+    # Persistent state dir (Flask secret fallback, etc.). Defaults to the
+    # uploads PVC mount so generated secrets survive pod restarts.
+    stateDir: /app/uploads
+    # Public-facing base path when atlas is mounted under a Canvas iframe
+    # (e.g. /atlas). When non-empty, the app enables SameSite=None and
+    # Secure cookies so sessions survive in the cross-site iframe. Leave
+    # empty for standalone (non-iframe) deployments.
+    basePath: ""
     anthropicModel: claude-sonnet-4-6
     # SOX compliance (0 = keyword-triggered only, 1 = always on)
     soxAlwaysOn: "0"
@@ -73,6 +81,10 @@ secrets:
   demoVerifyPin: ""
   demoTokenSecret: ""
   demoTokenTtlSeconds: "900"
+  # REQUIRED: 32+ byte hex string (e.g. `python -c "import secrets;
+  # print(secrets.token_hex(32))"`). Used as Flask session signing key.
+  # Stabilizes sessions across pod restarts in Canvas iframe deployments.
+  flaskSecretKey: ""
   # LLM API keys
   anthropicApiKey: ""
   openaiApiKey: ""

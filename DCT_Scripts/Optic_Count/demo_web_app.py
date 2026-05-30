@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import re
@@ -460,7 +459,7 @@ def index():
 <html>
 <head>
   <meta charset='utf-8'/>
-  <title>Atlas - DCT Infrastructure Intelligence</title>
+  <title>Aperture - DCT Infrastructure Intelligence</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: 24px auto; background: #F9FAFC; color: #343338; }
     .box { border: 1px solid #CDCED6; padding: 12px; margin-bottom: 12px; border-radius: 6px; background: #fff; }
@@ -512,7 +511,7 @@ def index():
   </style>
 </head>
 <body>
-  <h2>Atlas - DCT Infrastructure Intelligence</h2>
+  <h2>Aperture - DCT Infrastructure Intelligence</h2>
   <div class='box'>
     <h3>1) Verify Identity (PIN)</h3>
     <input id='username' placeholder='username' value='Lamar'/>
@@ -529,9 +528,9 @@ def index():
   </div>
 
   <div class='box'>
-    <h3>3) Ask Atlas</h3>
-    <textarea id='question' rows='3' placeholder='Ask Atlas about your infrastructure data'></textarea>
-    <button onclick='askAi()'>Ask Atlas</button>
+    <h3>3) Ask Aperture</h3>
+    <textarea id='question' rows='3' placeholder='Ask Aperture about your infrastructure data'></textarea>
+    <button onclick='askAi()'>Ask Aperture</button>
     <button id='controlsBtn' class='controls-btn' style='display:none;' onclick='openControlsModal()'>Top 3 Controls</button>
     <pre id='qaOut'></pre>
   </div>
@@ -547,6 +546,18 @@ def index():
   </div>
 
 <script>
+  function appPath(path) {
+    const match = window.location.pathname.match(/^(\/canvas-apps\/[^/]+)/);
+    const base = match ? match[1] : '';
+    if (!path) return base || '/';
+    if (/^[a-z]+:\/\//i.test(path)) return path;
+    const normalized = path.startsWith('/') ? path : '/' + path;
+    if (base && (normalized === base || normalized.startsWith(base + '/'))) return normalized;
+    return base ? base + normalized : normalized;
+  }
+
+  const apiPath = appPath;
+
   let token = null;
   let latestControlsText = '';
 
@@ -597,7 +608,7 @@ def index():
   }
 
   async function verify() {
-    const res = await fetch('/api/demo-verify-pin', {
+    const res = await fetch(apiPath('/api/demo-verify-pin'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ username: document.getElementById('username').value, pin: document.getElementById('pin').value })
@@ -617,7 +628,7 @@ def index():
     if (!fileInput.files.length) { alert('Select a file first'); return; }
     const form = new FormData();
     form.append('file', fileInput.files[0]);
-    const res = await fetch('/api/upload-count', {
+    const res = await fetch(apiPath('/api/upload-count'), {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token },
       body: form
@@ -665,14 +676,14 @@ def index():
       if (data.postgres.profile) output += ' (profile: ' + data.postgres.profile.name + ')';
       output += '\\n';
     }
-    output += 'Ready for questions. Ask Atlas anything about this cutsheet.';
+    output += 'Ready for questions. Ask Aperture anything about this cutsheet.';
     document.getElementById('countOut').innerText = output;
   }
 
   async function askAi() {
     if (!token) { alert('Verify first'); return; }
     const q = document.getElementById('question').value;
-    const res = await fetch('/api/sheet-qa', {
+    const res = await fetch(apiPath('/api/sheet-qa'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

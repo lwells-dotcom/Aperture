@@ -15,6 +15,7 @@ import logging
 import os
 import queue
 import re
+import secrets
 import tempfile
 import threading
 import time
@@ -22,7 +23,7 @@ import zipfile
 from pathlib import Path
 
 import io
-from flask import Flask, Response, jsonify, request, send_file, stream_with_context
+from flask import Flask, Response, jsonify, request, send_file, session, stream_with_context
 from werkzeug.utils import secure_filename
 import openpyxl.utils.exceptions
 
@@ -31,6 +32,8 @@ import Source_count_Netbox
 import demo_auth_ai
 import build_sheet_processor
 import cutsheet_preprocessor
+import ib_analyzer
+import roce_analyzer
 import netbox_dashboard_ingest
 from netbox_dashboard_routes import netbox_dashboard_bp
 
@@ -39,24 +42,116 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 
+
+def _resolve_flask_secret() -> str:
+    # Doppler-provided FLASK_SECRET_KEY is the prod source of truth.
+    env_secret = os.getenv("FLASK_SECRET_KEY", "").strip()
+    if env_secret:
+        return env_secret
+
+    # Fallback: persist a random secret to disk so it survives gunicorn
+    # process restarts within a single pod. Without this, the secret rotated
+    # on every restart, invalidating every prior session cookie and breaking
+    # /api/ask with "No sheet loaded" after the upload session was lost.
+    secret_dir = Path(os.getenv("ATLAS_STATE_DIR", "./uploads"))
+    secret_dir.mkdir(parents=True, exist_ok=True)
+    secret_path = secret_dir / ".flask_secret"
+    if secret_path.exists():
+        try:
+            return secret_path.read_text().strip() or secrets.token_hex(32)
+        except OSError:
+            pass
+    generated = secrets.token_hex(32)
+    try:
+        secret_path.write_text(generated)
+        secret_path.chmod(0o600)
+    except OSError:
+        pass
+    return generated
+
+
+app.secret_key = _resolve_flask_secret()
+
+# When deployed under Canvas, BASE_PATH is injected by the CI build. Use it
+# as a proxy for "running embedded in an iframe at *.coreweave.app" — in
+# that context the session cookie needs SameSite=None + Secure or browsers
+# will drop it, which manifested as /api/ask seeing a fresh user_id and
+# reporting "No sheet loaded" after a successful upload. For local
+# `docker compose up` on http://localhost we leave Flask defaults so the
+# cookie still works over plain HTTP.
+_IS_CANVAS_DEPLOYMENT = bool(os.getenv("BASE_PATH", "").strip())
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="None" if _IS_CANVAS_DEPLOYMENT else "Lax",
+    SESSION_COOKIE_SECURE=_IS_CANVAS_DEPLOYMENT,
+)
+
+
+def _normalize_base_path(value: str) -> str:
+    trimmed = str(value or "").strip().strip("/")
+    return f"/{trimmed}" if trimmed else ""
+
+
+def _read_manifest_app_id() -> str:
+    manifest_path = Path(__file__).resolve().parent / ".canvas" / "manifest.yaml"
+    try:
+        manifest = manifest_path.read_text()
+    except OSError:
+        return ""
+
+    match = re.search(r"^id:\s*([a-z0-9-]+)\s*$", manifest, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+APP_BASE_PATH = _normalize_base_path(
+    os.getenv("APP_BASE_PATH") or os.getenv("BASE_PATH") or ""
+)
+if not APP_BASE_PATH:
+    manifest_app_id = _read_manifest_app_id()
+    APP_BASE_PATH = f"/canvas-apps/{manifest_app_id}" if manifest_app_id else ""
+
+
+class PrefixMiddleware:
+    def __init__(self, app, prefix: str):
+        self.app = app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        path_info = environ.get("PATH_INFO", "")
+        if self.prefix and (
+            path_info == self.prefix or path_info.startswith(f"{self.prefix}/")
+        ):
+            environ["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "") + self.prefix
+            environ["PATH_INFO"] = path_info[len(self.prefix):] or "/"
+        return self.app(environ, start_response)
+
+
+app.wsgi_app = PrefixMiddleware(app.wsgi_app, APP_BASE_PATH)
+
+# Canvas/Union embeds apps in an iframe from *.coreweave.app — frame-ancestors
+# must allow that origin. X-Frame-Options: DENY is replaced by the CSP directive
+# (X-Frame-Options is ignored when frame-ancestors is present in modern browsers).
+_FRAME_ANCESTORS = "frame-ancestors 'self' https://*.coreweave.app"
+
 _DASHBOARD_CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data:; "
-    "connect-src 'self'"
+    "connect-src 'self'; "
+    + _FRAME_ANCESTORS
 )
 _DEFAULT_CSP = (
     "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'"
+    "style-src 'self' 'unsafe-inline'; "
+    + _FRAME_ANCESTORS
 )
 
 
 @app.after_request
 def set_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # The /dashboard route loads Tailwind, Chart.js, and Google Fonts from CDNs.
     # All other routes keep the stricter default CSP.
@@ -73,25 +168,21 @@ app.register_blueprint(netbox_dashboard_bp)
 UPLOAD_DIR = Path(os.getenv("ATLAS_UPLOAD_DIR", "./uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Server-side session store (keyed by demo token subject)
+# Server-side session store (keyed by session user ID)
 USER_CONTEXT = {}
-USER_SITE = {}  # username -> {"site_code": str, "site_id": int, "upload_id": int}
-AUDIT_LOG = []
+USER_SITE = {}  # session_user_id -> {"site_code": str, "site_id": int, "upload_id": int}
 _state_lock = threading.Lock()
 
 _CONTEXT_TTL_SECONDS = 2 * 60 * 60  # 2 hours
-_AUDIT_LOG_MAX = 1000
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _bearer(auth_header):
-    if not auth_header:
-        return None
-    parts = auth_header.split(" ", 1)
-    return parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else None
+def _get_session_user() -> str:
+    """Return a stable per-browser-session user ID (UUID hex), creating one if needed."""
+    return session.setdefault("user_id", secrets.token_hex(16))
 
 
 def _evict_stale_contexts():
@@ -100,43 +191,6 @@ def _evict_stale_contexts():
         stale = [u for u, ctx in USER_CONTEXT.items() if ctx.get("ts", 0) < cutoff]
         for u in stale:
             del USER_CONTEXT[u]
-
-
-def _audit(event, user, details):
-    with _state_lock:
-        AUDIT_LOG.append({"event": event, "user": user, "details": details, "ts": int(time.time())})
-        if len(AUDIT_LOG) > _AUDIT_LOG_MAX:
-            del AUDIT_LOG[:-_AUDIT_LOG_MAX]
-
-
-_RATE_LIMIT_STORE: dict = {}
-_RATE_LIMIT_MAX = 10
-_RATE_LIMIT_WINDOW = 60
-_RATE_LIMIT_MAX_KEYS = 5000
-
-
-def _get_client_ip() -> str:
-    # Trust only the direct connection — X-Forwarded-For is trivially spoofable.
-    # Add a TRUSTED_PROXIES allowlist if a reverse proxy is deployed in front.
-    return request.remote_addr or "unknown"
-
-
-def _check_rate_limit(key: str) -> bool:
-    now = time.monotonic()
-    with _state_lock:
-        if len(_RATE_LIMIT_STORE) > _RATE_LIMIT_MAX_KEYS:
-            expired = [k for k, (_, ws) in _RATE_LIMIT_STORE.items()
-                       if now - ws > _RATE_LIMIT_WINDOW][:100]
-            for k in expired:
-                del _RATE_LIMIT_STORE[k]
-        count, window_start = _RATE_LIMIT_STORE.get(key, (0, now))
-        if now - window_start > _RATE_LIMIT_WINDOW:
-            _RATE_LIMIT_STORE[key] = (1, now)
-            return True
-        if count >= _RATE_LIMIT_MAX:
-            return False
-        _RATE_LIMIT_STORE[key] = (count + 1, window_start)
-    return True
 
 
 def _normalize_rack_id(rack: str) -> str:
@@ -352,25 +406,27 @@ def _check_postgres() -> bool:
     return result
 
 
-def _run_postgres_upload_job(username: str, save_path_str: str, site_code: str, gen: int) -> None:
-    """Run atlas_data_loader.load_file after /api/upload-count returned (background)."""
+def _run_postgres_batch_job(username: str, save_paths: list, site_code: str, gen: int) -> None:
+    """Load one or more cutsheets into a SINGLE Postgres upload after
+    /api/upload-count returned (background). All sheets share one upload_id so
+    they are queried together; prior active uploads for the site are replaced."""
     pg_result = None
     err_msg = None
     try:
         import atlas_data_loader
 
-        pg_result = atlas_data_loader.load_file(
-            save_path_str, site_code, uploaded_by=username
+        pg_result = atlas_data_loader.load_files(
+            save_paths, site_code, uploaded_by=username
         )
     except Exception as exc:  # noqa: BLE001
         err_msg = str(exc)
-        log.exception("Background Postgres load failed for user=%s", username)
+        log.exception("Background Postgres batch load failed for user=%s", username)
 
     with _state_lock:
         ctx = USER_CONTEXT.get(username)
         if not ctx or ctx.get("_pg_import_gen") != gen:
             log.info(
-                "Discarding pg upload result (stale or missing context) user=%s",
+                "Discarding pg batch result (stale or missing context) user=%s",
                 username,
             )
             return
@@ -385,11 +441,7 @@ def _run_postgres_upload_job(username: str, save_path_str: str, site_code: str, 
         USER_CONTEXT[username] = ctx
 
         if pg_result and pg_result.get("ok"):
-            uid = (
-                pg_result.get("upload_id")
-                if not pg_result.get("skipped")
-                else pg_result.get("existing_upload_id")
-            )
+            uid = pg_result.get("upload_id")
             sid = pg_result.get("site_id")
             if sid is not None and uid is not None:
                 USER_SITE[username] = {
@@ -398,10 +450,11 @@ def _run_postgres_upload_job(username: str, save_path_str: str, site_code: str, 
                     "upload_id": uid,
                 }
                 log.info(
-                    "Postgres load OK (async): site=%s upload_id=%s rows=%s",
+                    "Postgres batch load OK (async): site=%s upload_id=%s conns=%s files=%d",
                     site_code,
                     uid,
                     pg_result.get("connections_loaded"),
+                    len(save_paths),
                 )
 
 
@@ -414,105 +467,85 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------------
-
-@app.post("/api/verify-pin")
-def verify_pin():
-    if not _check_rate_limit(_get_client_ip()):
-        return jsonify({"ok": False, "error": "Too many attempts. Try again later."}), 429
-
-    payload = request.get_json(silent=True) or {}
-    username = (payload.get("username") or "demo_user").strip()
-    pin = (payload.get("pin") or "").strip()
-
-    if not demo_auth_ai.verify_demo_pin(pin):
-        _audit("verify_failed", username, {"reason": "invalid_pin"})
-        return jsonify({"ok": False, "error": "Invalid PIN"}), 401
-
-    token = demo_auth_ai.create_demo_token(username)
-    _audit("verify_success", username, {})
-    return jsonify({"ok": True, "token": token})
-
-
-# ---------------------------------------------------------------------------
 # Sheet upload + count
 # ---------------------------------------------------------------------------
 
 @app.post("/api/upload-count")
 def upload_count():
-    token = _bearer(request.headers.get("Authorization"))
-    if not token:
-        return jsonify({"error": "Missing bearer token"}), 401
-    try:
-        claims = demo_auth_ai.parse_and_validate_demo_token(token)
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 401
-
-    if "file" not in request.files:
+    # Accept one or many cutsheets. Multiple files are loaded into a SINGLE
+    # Postgres upload for one site so they are queried together (e.g. 4 US-LZL01
+    # sheets). The field name stays "file" for back-compat; getlist picks up all.
+    files = [f for f in request.files.getlist("file") if f and f.filename]
+    if not files:
         return jsonify({"error": "No file provided"}), 400
-    f = request.files["file"]
-    if not f.filename.lower().endswith(".xlsx"):
-        return jsonify({"error": "Only .xlsx files are supported"}), 400
+    for f in files:
+        if not f.filename.lower().endswith(".xlsx"):
+            return jsonify({"error": f"Only .xlsx files are supported ({f.filename})"}), 400
 
-    safe_name = secure_filename(f.filename)
-    if not safe_name:
-        return jsonify({"error": "Invalid filename"}), 400
-    unique_name = f"{int(time.time())}_{claims['sub']}_{safe_name}"
-    save_path = UPLOAD_DIR / unique_name
-    f.save(save_path)
-
+    username = _get_session_user()
+    # Real cutsheets often carry no detectable site code (load as UNKNOWN and
+    # collide via the per-site soft-delete). Let the GUI pass an explicit code.
+    site_code_override = (request.form.get("site_code") or "").strip().upper() or None
     include_by_status = request.form.get("include_by_status", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
-    # Site code is derivable from filename/SITE-VARS before the full parse, so
-    # extract it now. Run preprocessor *before* Postgres so bad sheets fail fast
-    # and the browser is not stuck behind a long DB ingest with no response.
-    site_code = _extract_site_code(save_path)
+    saved = []  # list of (safe_name, save_path)
+    for f in files:
+        safe_name = secure_filename(f.filename)
+        if not safe_name:
+            return jsonify({"error": "Invalid filename"}), 400
+        unique_name = f"{int(time.time())}_{username}_{len(saved)}_{safe_name}"
+        save_path = UPLOAD_DIR / unique_name
+        f.save(save_path)
+        saved.append((safe_name, save_path))
 
+    # Resolve site code once for the whole batch (explicit override wins).
+    site_code = site_code_override or _extract_site_code(saved[0][1])
     pg_available = _check_postgres()
 
+    # Run the optic-count preprocessor per file synchronously (counts are the
+    # point of this endpoint); aggregate the text. Postgres ingest runs after.
+    parts = []
+    files_ctx = []
+    summary_merged: dict = {}
+    multi = len(saved) > 1
     try:
-        # ── Preprocessor first (calamine): normalize, strip section headers ──
-        try:
-            prep = cutsheet_preprocessor.preprocess_upload(str(save_path))
-            result_text = cutsheet_preprocessor.format_optic_count_text(prep["optic_counts"])
-
-            if prep["unknown_statuses"]:
-                unknowns = ", ".join(f"{v} ({c})" for v, c in prep["unknown_statuses"])
-                result_text += f"\n\nWarning: {len(prep['unknown_statuses'])} unknown status values: {unknowns}"
-        except Exception as prep_exc:
-            log.warning("Preprocessor failed, falling back to legacy path: %s", prep_exc)
-            result_text = Define_Optic_Count.count_all_files_gui([str(save_path)])
-
-        if pg_available:
-            context = {"files": [{"file_name": safe_name, "file_path": str(save_path)}], "ts": time.time()}
-        else:
-            _, context = Define_Optic_Count.count_and_build_context([str(save_path)])
-            context["ts"] = time.time()
-
-        # Optional: same request as upload — avoids a second round-trip and
-        # "No file loaded" if the first request timed out before context was set.
-        if include_by_status:
+        for safe_name, save_path in saved:
+            prep = None
             try:
-                status_block = Define_Optic_Count.count_all_files_gui_by_status(
-                    [str(save_path)]
-                )
-                result_text = result_text + "\n\n" + ("=" * 72) + "\n\n" + status_block
-            except Exception as status_exc:  # noqa: BLE001
-                log.warning("include_by_status block failed: %s", status_exc)
-                result_text += (
-                    f"\n\n(Warning: in-service sort failed: {status_exc})\n"
-                )
+                prep = cutsheet_preprocessor.preprocess_upload(str(save_path))
+                txt = cutsheet_preprocessor.format_optic_count_text(prep["optic_counts"])
+                if prep.get("unknown_statuses"):
+                    unknowns = ", ".join(f"{v} ({c})" for v, c in prep["unknown_statuses"])
+                    txt += f"\n\nWarning: {len(prep['unknown_statuses'])} unknown status values: {unknowns}"
+                for k, v in prep["optic_counts"]["by_type"].items():
+                    summary_merged[k] = summary_merged.get(k, 0) + v["total"]
+            except Exception as prep_exc:  # noqa: BLE001
+                log.warning("Preprocessor failed for %s, legacy path: %s", safe_name, prep_exc)
+                txt = Define_Optic_Count.count_all_files_gui([str(save_path)])
+            if include_by_status:
+                try:
+                    status_block = Define_Optic_Count.count_all_files_gui_by_status([str(save_path)])
+                    txt = txt + "\n\n" + ("=" * 72) + "\n\n" + status_block
+                except Exception as status_exc:  # noqa: BLE001
+                    log.warning("include_by_status block failed for %s: %s", safe_name, status_exc)
+                    txt += f"\n\n(Warning: in-service sort failed: {status_exc})\n"
+            parts.append(f"===== {safe_name} =====\n{txt}" if multi else txt)
+            files_ctx.append({"file_name": safe_name, "file_path": str(save_path)})
+        result_text = "\n\n".join(parts)
     except Exception:
         log.exception("File upload processing failed")
         return jsonify({"error": "File processing failed"}), 500
     finally:
         Define_Optic_Count.clear_excel_cache()
 
-    # Return JSON as soon as counting is done; Postgres ingest can take minutes
-    # on large workbooks and was blocking the browser for 90s+.
+    context = {"files": files_ctx, "ts": time.time()}
+    if not pg_available:
+        # In-memory fallback: expose merged optic summary for the ask path.
+        context["summary"] = summary_merged
+        context["parser_warnings"] = []
+
     pg_import_gen = int(time.time() * 1000) & 0x7FFFFFFF
     if pg_available:
         context["_postgres_import_pending"] = True
@@ -520,49 +553,40 @@ def upload_count():
 
     _evict_stale_contexts()
     with _state_lock:
-        USER_CONTEXT[claims["sub"]] = context
+        USER_CONTEXT[username] = context
 
     if pg_available:
         threading.Thread(
-            target=_run_postgres_upload_job,
-            args=(claims["sub"], str(save_path), site_code, pg_import_gen),
+            target=_run_postgres_batch_job,
+            args=(username, [str(p) for _, p in saved], site_code, pg_import_gen),
             name="atlas-pg-upload",
             daemon=True,
         ).start()
 
-    _audit("upload_count", claims["sub"], {"file": safe_name})
-    if not pg_available:
-        pg_status = "skipped"
-    else:
-        pg_status = "pending"
     resp = {
         "ok": True,
-        "file": safe_name,
+        "file": saved[0][0],          # back-compat (single-file callers)
+        "files": [n for n, _ in saved],
         "output": result_text,
-        "pg_loaded": pg_status,
+        "site_code": site_code,
+        "pg_loaded": "pending" if pg_available else "skipped",
     }
     if pg_available:
         resp["pg_message"] = (
-            "Saving to the database in the background — counts above are ready now."
+            f"Saving {len(saved)} cutsheet(s) to the database in the background "
+            f"under site {site_code} — counts above are ready now."
         )
     return jsonify(resp)
 
 
 @app.post("/api/count-by-status")
 def count_by_status():
-    token = _bearer(request.headers.get("Authorization"))
-    if not token:
-        return jsonify({"error": "Missing bearer token"}), 401
-    try:
-        claims = demo_auth_ai.parse_and_validate_demo_token(token)
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 401
-
-    if claims["sub"] not in USER_CONTEXT:
+    username = _get_session_user()
+    if username not in USER_CONTEXT:
         return jsonify({"error": "No file loaded — upload first"}), 400
 
     # Re-run against the saved file path stored in context
-    files = [f["file_path"] for f in USER_CONTEXT[claims["sub"]].get("files", [])]
+    files = [f["file_path"] for f in USER_CONTEXT[username].get("files", [])]
     try:
         result_text = Define_Optic_Count.count_all_files_gui_by_status(files)
     except (FileNotFoundError, OSError):
@@ -598,14 +622,6 @@ def stream_all_sites():
 
 @app.post("/api/buildsheet")
 def buildsheet():
-    token = _bearer(request.headers.get("Authorization"))
-    claims = None
-    if token:
-        try:
-            claims = demo_auth_ai.parse_and_validate_demo_token(token)
-        except Exception:
-            claims = None
-
     if "cutsheet" not in request.files:
         return jsonify({"error": "'cutsheet' file is required"}), 400
 
@@ -629,8 +645,8 @@ def buildsheet():
 
     try:
         result = build_sheet_processor.process_rack(cut_path, tpl_path, room, rack)
-    except ValueError:
-        return jsonify({"error": "Invalid input parameters"}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except (FileNotFoundError, OSError, openpyxl.utils.exceptions.InvalidFileException, zipfile.BadZipFile):
         log.exception("Rack sheet generation failed")
         return jsonify({"error": "File processing failed"}), 500
@@ -642,18 +658,13 @@ def buildsheet():
         except OSError:
             pass
 
-    if claims:
-        _evict_stale_contexts()
-        with _state_lock:
-            user_ctx = USER_CONTEXT.get(claims["sub"], {"summary": {}, "files": []})
-            user_ctx["ts"] = time.time()
-            user_ctx["_last_rack_result"] = result
-            USER_CONTEXT[claims["sub"]] = user_ctx
-        _audit(
-            "buildsheet",
-            claims["sub"],
-            {"room": room, "rack": rack, "total_cables": result.get("total_cables", 0)},
-        )
+    username = _get_session_user()
+    _evict_stale_contexts()
+    with _state_lock:
+        user_ctx = USER_CONTEXT.get(username, {"summary": {}, "files": []})
+        user_ctx["ts"] = time.time()
+        user_ctx["_last_rack_result"] = result
+        USER_CONTEXT[username] = user_ctx
 
     return jsonify({"ok": True, "data": result})
 
@@ -733,6 +744,78 @@ def buildsheet_dh():
 
 
 # ---------------------------------------------------------------------------
+# IB Analyzer
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ib-query")
+def ib_query():
+    if "file" not in request.files:
+        return jsonify({"error": "'file' is required"}), 400
+    device = request.form.get("device", "").strip()
+    if not device:
+        return jsonify({"error": "'device' is required"}), 400
+
+    ib_file = request.files["file"]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        ib_file.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        result = ib_analyzer.query_device(tmp_path, device)
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 400
+    except Exception:
+        log.exception("IB query failed")
+        return jsonify({"error": "File processing failed"}), 500
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    if result["total"] == 0:
+        return jsonify({"error": f"Device '{device}' not found in any sheet"}), 404
+
+    return jsonify({"ok": True, "data": result})
+
+
+# ---------------------------------------------------------------------------
+# RoCE Analyzer
+# ---------------------------------------------------------------------------
+
+@app.post("/api/roce-query")
+def roce_query():
+    if "file" not in request.files:
+        return jsonify({"error": "'file' is required"}), 400
+    loc = request.form.get("loc", "").strip()
+    if not loc:
+        return jsonify({"error": "'loc' is required"}), 400
+
+    roce_file = request.files["file"]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        roce_file.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        result = roce_analyzer.query_location(tmp_path, loc)
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 400
+    except Exception:
+        log.exception("RoCE query failed")
+        return jsonify({"error": "File processing failed"}), 500
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    if result["total"] == 0:
+        return jsonify({"error": f"Location '{loc}' not found in any sheet"}), 404
+
+    return jsonify({"ok": True, "data": result})
+
+
+# ---------------------------------------------------------------------------
 # AI Q&A
 # ---------------------------------------------------------------------------
 
@@ -755,19 +838,44 @@ def _get_latest_upload_for_user(conn, username):
 
 @app.post("/api/ask")
 def ask_ai():
-    token = _bearer(request.headers.get("Authorization"))
-    if not token:
-        return jsonify({"error": "Missing bearer token"}), 401
     payload = request.get_json(silent=True) or {}
     question = (payload.get("question") or "").strip()
     if not question:
         return jsonify({"error": "question is required"}), 400
-    try:
-        claims = demo_auth_ai.parse_and_validate_demo_token(token)
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 401
 
-    username = claims["sub"]
+    username = _get_session_user()
+
+    # --- Meta-questions about what's loaded short-circuit before Postgres ---
+    _meta_re = re.compile(
+        r"\b(?:what|which)\b.*\b(?:file|sheet|cutsheet|upload|workbook|xlsx)\b.*\b(?:loaded|uploaded|active|current|using)\b",
+        re.IGNORECASE,
+    )
+    _meta_re2 = re.compile(
+        r"\b(?:file|sheet|cutsheet|upload)\s+(?:is\s+)?(?:loaded|uploaded|active|current)\b",
+        re.IGNORECASE,
+    )
+    if _meta_re.search(question) or _meta_re2.search(question):
+        with _state_lock:
+            _ctx = USER_CONTEXT.get(username) or {}
+        _files = _ctx.get("files") or []
+        if _files:
+            _names = [f.get("file_name") or Path(f.get("file_path", "")).name for f in _files]
+            _msg = "Loaded file(s): " + ", ".join(_names)
+            return jsonify({
+                "ok": True,
+                "result": {
+                    "answer": _msg,
+                    "timestamp": int(time.time()),
+                    "model": "atlas-meta",
+                    "provider": "atlas",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "elapsed_seconds": 0,
+                },
+                "context_source": "META",
+                "question_type": "file_loaded",
+            })
+        return jsonify({"error": "No sheet loaded — upload a file first"}), 400
 
     # --- If a cutsheet upload just started Postgres ingest, wait (bounded) ---
     with _state_lock:
@@ -888,10 +996,27 @@ def ask_ai():
             )
 
     if pg_context and "error" not in pg_context:
-        with _state_lock:
-            sheet_context["_postgres_context"] = pg_context
+        if pg_context.get("confidence") == "low":
+            log.info(
+                "Demoting low-confidence Postgres context for user=%s type=%s — using in-memory sheet",
+                username, pg_context.get("question_type"),
+            )
+            pg_context = None
+            pg_fallback_reason = "low_confidence_postgres"
+        else:
+            with _state_lock:
+                sheet_context["_postgres_context"] = pg_context
 
-    result = demo_auth_ai.qa_with_token(token, question, sheet_context)
+    _raw = demo_auth_ai.ask_grounded(question, sheet_context)
+    result = {
+        "answer": _raw.get("answer", ""),
+        "timestamp": int(time.time()),
+        "model": _raw.get("model", ""),
+        "provider": _raw.get("provider", ""),
+        "input_tokens": _raw.get("input_tokens", 0),
+        "output_tokens": _raw.get("output_tokens", 0),
+        "elapsed_seconds": _raw.get("elapsed_seconds", 0),
+    }
 
     # Add Postgres metadata to response
     resp = {"ok": True, "result": result}
@@ -915,7 +1040,6 @@ def ask_ai():
     if resp["context_source"] != "POSTGRES" and pg_fallback_reason:
         resp["pg_fallback_reason"] = pg_fallback_reason
 
-    _audit("ask_ai", username, {"question": question})
     return jsonify(resp)
 
 
@@ -933,15 +1057,15 @@ HTML_PAGE = """<!doctype html>
 <head>
   <meta charset="utf-8"/>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔬</text></svg>"/>
-  <title>Atlas — DCT Infrastructure Intelligence</title>
+  <title>Aperture — DCT Infrastructure Intelligence</title>
   <style>
     * { box-sizing: border-box; }
     body { font-family: Arial, sans-serif; max-width: 1000px; margin: 24px auto; padding: 0 12px; background: #F9FAFC; color: #343338; }
     h1 { font-size: 1.4rem; margin-bottom: 4px; color: #343338; }
     h3 { margin: 0 0 10px 0; font-size: 1rem; color: #343338; }
     .section { border: 1px solid #CDCED6; border-radius: 6px; padding: 14px; margin-bottom: 14px; background: #fff; }
-    input[type=text], input[type=password], input[type=file] { width: 100%; padding: 7px; margin: 4px 0 8px 0; border: 1px solid #CDCED6; border-radius: 4px; }
-    input[type=text]:focus, input[type=password]:focus { outline: none; border-color: #2741E7; box-shadow: 0 0 0 2px #DAE5FF; }
+    input[type=text], input[type=file] { width: 100%; padding: 7px; margin: 4px 0 8px 0; border: 1px solid #CDCED6; border-radius: 4px; }
+    input[type=text]:focus { outline: none; border-color: #2741E7; box-shadow: 0 0 0 2px #DAE5FF; }
     .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
     button { padding: 7px 14px; border: 1px solid #2741E7; border-radius: 4px; background: #2741E7; color: #fff; cursor: pointer; }
     button:hover { background: #4665FF; border-color: #4665FF; }
@@ -957,9 +1081,6 @@ HTML_PAGE = """<!doctype html>
     .spinner.active { display: inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner svg { animation: spin 0.9s linear infinite; vertical-align: middle; }
-    #verifyBadge { font-weight: bold; margin-left: 10px; }
-    #verifyBadge.ok { color: #2741E7; }
-    #verifyBadge.fail { color: red; }
     nav { display: flex; gap: 2px; margin: 16px 0 0 0; background: #343338; border-radius: 6px 6px 0 0; padding: 6px 8px 0 8px; }
     nav a { padding: 8px 18px; color: #CDCED6; text-decoration: none; border-radius: 4px 4px 0 0; font-size: 0.95rem; cursor: pointer; }
     nav a:hover { background: #2741E7; color: #fff; }
@@ -969,22 +1090,13 @@ HTML_PAGE = """<!doctype html>
   </style>
 </head>
 <body>
-  <h1>Atlas — DCT Infrastructure Intelligence</h1>
-
-  <!-- 1. Auth -->
-  <div class="section">
-    <h3>Identity Verification</h3>
-    <form onsubmit="verify(); return false;" autocomplete="on">
-      <input type="text" id="username" placeholder="Username" value="demo_user" style="width:200px" autocomplete="username"/>
-      <input type="password" id="pin" placeholder="PIN" style="width:140px" autocomplete="current-password"/>
-      <button type="submit">Verify</button>
-    </form>
-    <span id="verifyBadge"></span>
-  </div>
+  <h1>Aperture — DCT Infrastructure Intelligence <a href="https://coreweave.atlassian.net/wiki/spaces/~71202033c11abfc5ac4e7295722dd23b043a53/pages/1702789201/Atlas+DCT+Infrastructure+Intelligence+User+Guide" target="_blank" rel="noopener" style="font-size:0.55em; font-weight:normal; vertical-align:middle; margin-left:14px; background:#1868db; color:#fff; padding:4px 12px; border-radius:5px; text-decoration:none;">Documentation</a></h1>
 
   <nav>
-    <a class="active" onclick="showPage('main', this)">Main</a>
+    <a class="active" onclick="showPage('main', this)">Optic Inventory</a>
     <a onclick="showPage('buildsheet', this)">Rack Analyzer</a>
+    <a onclick="showPage('ib', this)">IB Rack Analyzer</a>
+    <a onclick="showPage('roce', this)">RoCE Rack Analyzer</a>
   </nav>
 
   <!-- Page: Main -->
@@ -992,8 +1104,13 @@ HTML_PAGE = """<!doctype html>
 
   <!-- 2. Sheet Count -->
   <div class="section">
-    <h3>Cutsheet Optic Count</h3>
-    <input type="file" id="sheetFile" accept=".xlsx"/>
+    <h3>Build Sheet Optic Count</h3>
+    <input type="file" id="sheetFile" accept=".xlsx" multiple/>
+    <div style="margin:8px 0; font-size:0.85rem; opacity:0.8;">Tip: select multiple cutsheets (Cmd/Ctrl-click) to load them together as one site.</div>
+    <div style="margin:8px 0;">
+      <label for="siteCode" style="font-size:0.85rem;">Site code (optional, groups the sheets):</label>
+      <input type="text" id="siteCode" placeholder="e.g. US-LZL01" style="width:160px; margin-left:6px;"/>
+    </div>
     <div class="btn-row">
       <button onclick="uploadCount()">Count</button>
       <button onclick="countByStatus()">Count, Sort by In Service</button>
@@ -1029,7 +1146,7 @@ HTML_PAGE = """<!doctype html>
 
   <!-- 4. AI Q&A -->
   <div class="section">
-    <h3>Ask Atlas (Sheet Context)</h3>
+    <h3>Ask Aperture (Sheet Context)</h3>
     <input type="text" id="question" placeholder="Ask a question about your loaded cutsheet..."/>
     <div class="btn-row">
       <button onclick="askAi()">Ask AI</button>
@@ -1138,7 +1255,10 @@ HTML_PAGE = """<!doctype html>
 
   <!-- Optic Summary -->
   <div class="section" id="bsOpticSection" style="display:none;">
-    <h3>Optic Summary</h3>
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+      <h3 style="margin:0;">Optic Summary</h3>
+      <button onclick="downloadOpticSummary()">Download Optic Summary</button>
+    </div>
     <div style="display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start;">
       <div>
         <table id="bsOpticTable" style="border-collapse:collapse; font-size:0.85rem;">
@@ -1176,7 +1296,22 @@ HTML_PAGE = """<!doctype html>
     <div style="font-size:0.82rem; color:#747283; margin:0 0 8px 0;">
       Both cable endpoints are in the queried rack.
     </div>
-    <div class="output" id="bsInternalOut" style="max-height:300px;"></div>
+    <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="background:#DAE5FF; position:sticky; top:0;">
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">A Location</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">A Port</th>
+            <th style="text-align:center; padding:5px 8px; border:1px solid #CDCED6; color:#747283;">→</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Z Location</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Z Port</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Cable</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Status</th>
+          </tr>
+        </thead>
+        <tbody id="bsInternalBody"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Cab-to-Cab Cables -->
@@ -1189,13 +1324,151 @@ HTML_PAGE = """<!doctype html>
     <div style="font-size:0.82rem; color:#747283; margin:0 0 8px 0;">
       One cable endpoint is in the queried rack and the other endpoint is in a different rack, room, or hall.
     </div>
-    <div class="output" id="bsCabOut" style="max-height:300px;"></div>
+    <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="background:#DAE5FF; position:sticky; top:0;">
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Bundle</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">This Rack Location</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Port</th>
+            <th style="text-align:center; padding:5px 8px; border:1px solid #CDCED6; color:#747283;">→</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Remote Location</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Port</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Cable</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Status</th>
+          </tr>
+        </thead>
+        <tbody id="bsCabBody"></tbody>
+      </table>
+    </div>
   </div>
 
   </div><!-- end page-buildsheet -->
 
+  <!-- Page: IB Rack Analyzer -->
+  <div class="page" id="page-ib">
+
+  <div class="section">
+    <h3>IB Rack Analyzer — Device Query</h3>
+    <div style="margin-bottom:10px;">
+      <label style="font-size:0.85rem; font-weight:bold;">IB Build Sheet</label>
+      <input type="file" id="ibFile" accept=".xlsx"/>
+    </div>
+    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+      <div>
+        <label style="font-size:0.85rem; font-weight:bold; display:block;">Device Name</label>
+        <input type="text" id="ibDevice" placeholder="e.g. S2.1.1 or L30.1.1-DH1" style="width:240px; margin:0;" onkeydown="if(event.key==='Enter') runIBQuery()"/>
+      </div>
+      <button onclick="runIBQuery()" id="ibBtn">Query Device</button>
+    </div>
+    <div class="status-bar" id="ibStatus"></div>
+  </div>
+
+  <div class="section" id="ibOpticSection" style="display:none;">
+    <h3>Optic Summary — <span id="ibDeviceLabel"></span></h3>
+    <table style="border-collapse:collapse; font-size:0.85rem;">
+      <thead>
+        <tr style="background:#DAE5FF;">
+          <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Optic Type</th>
+          <th style="text-align:right; padding:5px 8px; border:1px solid #CDCED6;">Count</th>
+        </tr>
+      </thead>
+      <tbody id="ibOpticBody"></tbody>
+    </table>
+  </div>
+
+  <div class="section" id="ibConnSection" style="display:none;">
+    <h3>Connections (<span id="ibConnCount">0</span>)</h3>
+    <div style="overflow-x:auto; max-height:600px; overflow-y:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="background:#DAE5FF; position:sticky; top:0;">
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Port</th>
+            <th style="text-align:center; padding:5px 8px; border:1px solid #CDCED6; color:#747283;">→</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Remote Device</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Remote Port</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Optic</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Cable</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Status</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Sheet</th>
+          </tr>
+        </thead>
+        <tbody id="ibConnBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  </div><!-- end page-ib -->
+
+  <!-- Page: RoCE Rack Analyzer -->
+  <div class="page" id="page-roce">
+
+  <div class="section">
+    <h3>RoCE Rack Analyzer — Device Query</h3>
+    <div style="margin-bottom:10px;">
+      <label style="font-size:0.85rem; font-weight:bold;">RoCE Build Sheet</label>
+      <input type="file" id="roceFile" accept=".xlsx"/>
+    </div>
+    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+      <div>
+        <label style="font-size:0.85rem; font-weight:bold; display:block;">Device Location (LOC:CAB:RU)</label>
+        <input type="text" id="roceLoc" placeholder="e.g. dh202:003:37" style="width:220px; margin:0;" onkeydown="if(event.key==='Enter') runRoCEQuery()"/>
+      </div>
+      <button onclick="runRoCEQuery()" id="roceBtn">Query Device</button>
+    </div>
+    <div class="status-bar" id="roceStatus"></div>
+  </div>
+
+  <div class="section" id="roceOpticSection" style="display:none;">
+    <h3>Optic Summary — <span id="roceLocLabel"></span> <span id="roceDnsLabel" style="font-weight:normal; font-size:0.85rem; color:#747283;"></span></h3>
+    <table style="border-collapse:collapse; font-size:0.85rem;">
+      <thead>
+        <tr style="background:#DAE5FF;">
+          <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Optic Type</th>
+          <th style="text-align:right; padding:5px 8px; border:1px solid #CDCED6;">Count</th>
+        </tr>
+      </thead>
+      <tbody id="roceOpticBody"></tbody>
+    </table>
+  </div>
+
+  <div class="section" id="roceConnSection" style="display:none;">
+    <h3>Connections (<span id="roceConnCount">0</span>)</h3>
+    <div style="overflow-x:auto; max-height:600px; overflow-y:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="background:#DAE5FF; position:sticky; top:0;">
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Port</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Conn</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Interface</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">This Optic</th>
+            <th style="text-align:center; padding:5px 8px; border:1px solid #CDCED6; color:#747283;">→</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Remote Loc</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Remote Port</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Remote Optic</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Status</th>
+            <th style="text-align:left; padding:5px 8px; border:1px solid #CDCED6;">Sheet</th>
+          </tr>
+        </thead>
+        <tbody id="roceConnBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  </div><!-- end page-roce -->
+
 <script>
-  let token = null;
+  function appPath(path) {
+    const match = window.location.pathname.match(/^([/]canvas-apps[/][^/]+)/);
+    const base = match ? match[1] : '';
+    if (!path) return base || '/';
+    if (/^[a-z]+:\/\//i.test(path)) return path;
+    const normalized = path.startsWith('/') ? path : '/' + path;
+    if (base && (normalized === base || normalized.startsWith(base + '/'))) return normalized;
+    return base ? base + normalized : normalized;
+  }
+
+  const apiPath = appPath;
 
   function showPage(name, el) {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -1204,53 +1477,253 @@ HTML_PAGE = """<!doctype html>
     el.classList.add('active');
   }
 
-  // --- Auth ---
-  async function verify() {
-    const res = await fetch('/api/verify-pin', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        username: document.getElementById('username').value,
-        pin: document.getElementById('pin').value
-      })
+  // --- Output renderers ---
+
+  function _makeTable(headers, rows, rightAlign) {
+    const table = document.createElement('table');
+    table.style.cssText = 'border-collapse:collapse; font-size:0.85rem; margin-bottom:12px;';
+    const thead = document.createElement('thead');
+    const hrow = document.createElement('tr');
+    hrow.style.background = '#DAE5FF';
+    headers.forEach((h, i) => {
+      const th = document.createElement('th');
+      th.style.cssText = 'padding:5px 10px; border:1px solid #CDCED6; text-align:' + (rightAlign[i] ? 'right' : 'left') + '; white-space:nowrap;';
+      th.textContent = h;
+      hrow.appendChild(th);
     });
-    const data = await res.json();
-    const badge = document.getElementById('verifyBadge');
-    if (!res.ok) {
-      badge.textContent = '✗ ' + (data.error || 'Failed');
-      badge.className = 'fail';
-      return;
-    }
-    token = data.token;
-    badge.textContent = '✓ Verified as ' + document.getElementById('username').value;
-    badge.className = 'ok';
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.forEach((row, ri) => {
+      const tr = document.createElement('tr');
+      if (ri % 2 === 1) tr.style.background = '#FAFAFA';
+      row.forEach((val, i) => {
+        const td = document.createElement('td');
+        td.style.cssText = 'padding:4px 10px; border:1px solid #CDCED6; text-align:' + (rightAlign[i] ? 'right' : 'left') + ';';
+        td.textContent = val || '';
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
   }
 
-  // --- Auto re-verify on 401 ---
-  async function _reVerify() {
-    const u = document.getElementById('username').value;
-    const p = document.getElementById('pin').value;
-    if (!u || !p) return false;
-    try {
-      const res = await fetch('/api/verify-pin', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({username: u, pin: p})
-      });
-      if (!res.ok) return false;
-      const data = await res.json();
-      token = data.token;
-      return true;
-    } catch (_) { return false; }
-  }
-  async function _authFetch(url, opts) {
-    let res = await fetch(url, opts);
-    if (res.status === 401 && await _reVerify()) {
-      opts.headers = opts.headers || {};
-      opts.headers['Authorization'] = 'Bearer ' + token;
-      res = await fetch(url, opts);
+  // Parse and render the side-by-side "In Service | Not In Service" block
+  function _renderSideBySide(text, container) {
+    const lines = text.split('\\n');
+    const blocks = [];
+    let cur = null;
+
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      if (!line.trim()) continue;
+      if (/^[-]{5,}\+[-]{5,}/.test(line.trim())) continue; // separator
+
+      const grandMatch = line.match(/Total\s*\(In\s*\+\s*Not In Service\):\s*(\d+)/);
+      if (grandMatch) {
+        if (cur) cur.grandTotal = +grandMatch[1];
+        continue;
+      }
+
+      if (line.includes(' | ')) {
+        const parts = line.split(' | ');
+        if (parts.length >= 2 && parts[0].toLowerCase().includes('service')) {
+          if (cur) cur.header = [parts[0].trim(), parts[1].trim()];
+          continue;
+        }
+        const lm = parts[0].trim().match(/^(.+):\s*(\d+)\s*$/);
+        const rm = (parts[1] || '').trim().match(/^(.+):\s*(\d+)\s*$/);
+        if (lm && rm && cur) {
+          const name = lm[1].trimEnd();
+          if (name.trim() === 'Total') { cur.totalIn = +lm[2]; cur.totalNotIn = +rm[2]; }
+          else cur.rows.push({name: name.trim(), inSvc: +lm[2], notIn: +rm[2]});
+        }
+        continue;
+      }
+
+      // Title line — flush previous block, start new
+      if (cur && cur.rows.length) blocks.push(cur);
+      cur = {title: line.trim(), header: ['In Service', 'Not In Service'], rows: [], totalIn: 0, totalNotIn: 0, grandTotal: 0};
     }
-    return res;
+    if (cur && cur.rows.length) blocks.push(cur);
+
+    blocks.forEach(block => {
+      const h4 = document.createElement('h4');
+      h4.style.cssText = 'margin:0 0 6px 0; font-size:0.9rem; color:#1a1a2e;';
+      h4.textContent = block.title;
+      container.appendChild(h4);
+      container.appendChild(_makeTable(
+        ['Type', block.header[0], block.header[1]],
+        block.rows.map(r => [r.name, r.inSvc.toLocaleString(), r.notIn.toLocaleString()]),
+        [false, true, true]
+      ));
+      if (block.totalIn || block.totalNotIn) {
+        const tot = document.createElement('div');
+        tot.style.cssText = 'font-size:0.85rem; margin:-4px 0 14px; padding:5px 10px; background:#F5F7FF; border:1px solid #CDCED6; border-radius:0 0 4px 4px;';
+        const grand = block.grandTotal || (block.totalIn + block.totalNotIn);
+        tot.innerHTML = '<strong>In Service:</strong> ' + block.totalIn.toLocaleString()
+          + ' &nbsp;|&nbsp; <strong>Not In Service:</strong> ' + block.totalNotIn.toLocaleString()
+          + ' &nbsp;|&nbsp; <strong>Grand Total:</strong> ' + grand.toLocaleString();
+        container.appendChild(tot);
+      }
+    });
+  }
+
+  // Parse and render count output (both regular and by-status)
+  function _renderCountOutput(text) {
+    const container = document.getElementById('countOut');
+    container.innerHTML = '';
+    if (!text || !text.trim()) return;
+
+    const parts = text.split(/\\n\\n={10,}\\n\\n/);
+    parts.forEach((part, pi) => {
+      if (!part.trim()) return;
+      const wrap = document.createElement('div');
+      if (pi > 0) { const hr = document.createElement('hr'); hr.style.cssText = 'border:none; border-top:1px solid #CDCED6; margin:12px 0;'; container.appendChild(hr); }
+
+      // Parse lines into sections.  A section is an optional title header
+      // followed by optic/device rows and summary totals.  IB and RoCE files
+      // use the simple "Name: count" format (no A/Z breakdown); cutsheets use
+      // the richer "Name: total  (A: x, Z: y)" format.  Both are handled here.
+      const sections = [];
+      let pendingTitle = null;
+      let opticRows = [], summaryLines = [], noteLines = [], inNote = false;
+
+      function _flushSection() {
+        if (opticRows.length || summaryLines.length) {
+          sections.push({title: pendingTitle, opticRows: opticRows.slice(), summaryLines: summaryLines.slice(), noteLines: noteLines.slice()});
+        }
+        pendingTitle = null; opticRows = []; summaryLines = []; noteLines = []; inNote = false;
+      }
+
+      for (const line of part.split('\\n')) {
+        if (!line.trim()) continue;
+        if (/^[-=]{5,}$/.test(line.trim())) continue; // separator lines
+
+        // "Name: total  (A: x, Z: y)" — cutsheet preprocessor format
+        const om = line.match(/^(.+?):\\s*(\\d+)\\s+\\(A:\\s*(\\d+),\\s*Z:\\s*(\\d+)\\)/);
+        if (om) { opticRows.push({optic: om[1].trim(), total: +om[2], a: +om[3], z: +om[4]}); inNote = false; continue; }
+
+        // "Total A-side optics: 150" / "Grand total optics: 300"
+        const tm = line.match(/^(Total [^:]+|Grand total [^:]+):\\s*(.+)$/);
+        if (tm) { summaryLines.push({label: tm[1].trim(), value: tm[2].trim()}); continue; }
+
+        // "Total: 150" — simple total from create_count_string (IB/RoCE)
+        const stm = line.match(/^Total:\\s*([\\d,]+)$/);
+        if (stm) { summaryLines.push({label: 'Total', value: stm[1]}); continue; }
+
+        if (line.startsWith('Note:') || inNote) { inNote = true; noteLines.push(line); continue; }
+
+        // "IB NODE OPTIC: 144" — simple Name: count (IB/RoCE fallback path)
+        const sm = line.match(/^([A-Za-z0-9][^:]+?):\\s*(\\d+)$/);
+        if (sm) { opticRows.push({optic: sm[1].trim(), total: +sm[2], a: null, z: null}); inNote = false; continue; }
+
+        // Title/header line (no colon) — flush current section and start a new one
+        if (!line.includes(':')) { _flushSection(); pendingTitle = line.trim(); }
+      }
+      _flushSection();
+
+      const hasParsedRows = sections.some(s => s.opticRows.length > 0);
+
+      if (hasParsedRows) {
+        sections.forEach((sec, si) => {
+          if (!sec.opticRows.length && !sec.summaryLines.length) return;
+          if (si > 0) { const hr2 = document.createElement('hr'); hr2.style.cssText = 'border:none; border-top:1px solid #e8e8e8; margin:8px 0;'; wrap.appendChild(hr2); }
+
+          if (sec.title) {
+            const h = document.createElement('div');
+            h.style.cssText = 'font-weight:bold; font-size:0.88rem; color:#343338; margin:0 0 6px 0;';
+            h.textContent = sec.title;
+            wrap.appendChild(h);
+          }
+
+          if (sec.opticRows.length) {
+            const hasAZ = sec.opticRows.some(r => r.a !== null);
+            wrap.appendChild(_makeTable(
+              hasAZ ? ['Optic Type', 'Total', 'A-Side', 'Z-Side'] : ['Optic / Device Type', 'Count'],
+              sec.opticRows.map(r => hasAZ
+                ? [r.optic, r.total.toLocaleString(), r.a.toLocaleString(), r.z.toLocaleString()]
+                : [r.optic, r.total.toLocaleString()]
+              ),
+              hasAZ ? [false, true, true, true] : [false, true]
+            ));
+          }
+
+          if (sec.summaryLines.length) {
+            const sd = document.createElement('div');
+            sd.style.cssText = 'margin:0 0 10px; font-size:0.85rem;';
+            sec.summaryLines.forEach(({label, value}) => {
+              const row = document.createElement('div');
+              row.style.cssText = 'display:flex; gap:12px; padding:2px 0; border-bottom:1px solid #f0f0f0;';
+              const l = document.createElement('span'); l.style.cssText = 'color:#747283; min-width:190px;'; l.textContent = label + ':';
+              const v = document.createElement('span'); v.style.fontWeight = 'bold'; v.textContent = (+String(value).replace(/,/g,'')).toLocaleString();
+              row.appendChild(l); row.appendChild(v); sd.appendChild(row);
+            });
+            wrap.appendChild(sd);
+          }
+
+          if (sec.noteLines.length) {
+            const nd = document.createElement('div');
+            nd.style.cssText = 'background:#F5F7FF; border:1px solid #CDCED6; border-radius:4px; padding:8px 12px; font-size:0.82rem; color:#555; margin-top:8px;';
+            nd.textContent = sec.noteLines.join(' ').replace(/\\s+/g, ' ');
+            wrap.appendChild(nd);
+          }
+        });
+      } else if (part.includes(' | ')) {
+        _renderSideBySide(part, wrap);
+      } else {
+        const pre = document.createElement('div');
+        pre.style.cssText = 'font-size:0.85rem; white-space:pre-wrap;';
+        pre.textContent = part;
+        wrap.appendChild(pre);
+      }
+      container.appendChild(wrap);
+    });
+  }
+
+  // Accumulation buffer + renderer for NetBox SSE stream
+  let _netboxTextBuffer = '';
+
+  function _renderNetboxOutput(text) {
+    const container = document.getElementById('netboxOut');
+    container.innerHTML = '';
+    if (!text.trim()) return;
+    const lines = text.split('\\n');
+    const statusLines = [], sections = [];
+    let cur = null;
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const secM = line.match(/^===\\s*(.+?)\\s*===\\s*$/);
+      if (secM) { if (cur) sections.push(cur); cur = {header: secM[1], rows: []}; continue; }
+      if (/^={10,}$/.test(line.trim())) { if (cur) sections.push(cur); cur = null; continue; }
+      if (cur && /^\\s+\\S/.test(line)) {
+        const rm = line.match(/^\\s+(.+?):\\s*(\\d[\\d,]*)\\s*$/);
+        if (rm) { cur.rows.push({label: rm[1].trim(), count: +rm[2].replace(/,/g,'')}); continue; }
+      }
+      const subM = line.match(/^---\\s*(.+?)\\s*---\\s*$/);
+      if (subM) { if (cur) sections.push(cur); cur = {header: subM[1], rows: [], sub: true}; continue; }
+      if (!cur) statusLines.push(line);
+    }
+    if (cur && cur.rows.length) sections.push(cur);
+
+    if (statusLines.some(l => l.trim())) {
+      const log = document.createElement('div');
+      log.style.cssText = 'font-size:0.82rem; color:#555; margin-bottom:12px; padding:8px 12px; background:#F5F7FF; border:1px solid #CDCED6; border-radius:4px; line-height:1.7;';
+      statusLines.forEach(l => { if (!l.trim()) return; const p = document.createElement('p'); p.style.margin = '0'; p.textContent = l; log.appendChild(p); });
+      container.appendChild(log);
+    }
+    sections.forEach(sec => {
+      const sd = document.createElement('div');
+      sd.style.cssText = 'margin-bottom:14px;';
+      const h4 = document.createElement('h4');
+      h4.style.cssText = 'margin:0 0 5px 0; font-size:' + (sec.sub ? '0.85rem' : '0.9rem') + '; color:#1a1a2e; font-weight:bold;';
+      h4.textContent = sec.header;
+      sd.appendChild(h4);
+      if (sec.rows.length) sd.appendChild(_makeTable(['Type / Model', 'Count'], sec.rows.map(r => [r.label, r.count.toLocaleString()]), [false, true]));
+      container.appendChild(sd);
+    });
   }
 
   // --- Elapsed timer helper ---
@@ -1270,17 +1743,23 @@ HTML_PAGE = """<!doctype html>
   }
 
   // --- Sheet count ---
-  async function uploadCount() {
-    if (!token) { alert('Verify identity first.'); return; }
+  function _buildCountForm() {
     const fileInput = document.getElementById('sheetFile');
-    if (!fileInput.files.length) { alert('Select a file first.'); return; }
+    const form = new FormData();
+    for (let i = 0; i < fileInput.files.length; i++) form.append('file', fileInput.files[i]);
+    const sc = (document.getElementById('siteCode') || {}).value;
+    if (sc && sc.trim()) form.append('site_code', sc.trim());
+    return form;
+  }
+
+  async function uploadCount() {
+    const fileInput = document.getElementById('sheetFile');
+    if (!fileInput.files.length) { alert('Select one or more files first.'); return; }
     _startTimer();
     try {
-      const form = new FormData();
-      form.append('file', fileInput.files[0]);
-      const res = await _authFetch('/api/upload-count', {
+      const form = _buildCountForm();
+      const res = await fetch(apiPath('/api/upload-count'), {
         method: 'POST',
-        headers: {'Authorization': 'Bearer ' + token},
         body: form
       });
       let data;
@@ -1288,7 +1767,7 @@ HTML_PAGE = """<!doctype html>
       if (!res.ok) {
         document.getElementById('countOut').textContent = 'Error: ' + (data.error || 'Unknown error');
       } else {
-        document.getElementById('countOut').textContent = data.output;
+        _renderCountOutput(data.output);
         if (data.pg_loaded === 'pending' && data.pg_message) {
           const info = document.createElement('div');
           info.style.cssText = 'background:#E8F0FE; border:1px solid #2741E7; border-radius:4px; padding:10px; margin-bottom:10px; color:#1a1a2e; font-size:0.9rem;';
@@ -1312,17 +1791,14 @@ HTML_PAGE = """<!doctype html>
   }
 
   async function countByStatus() {
-    if (!token) { alert('Verify identity first.'); return; }
     const fileInput = document.getElementById('sheetFile');
-    if (!fileInput.files.length) { alert('Select a file first.'); return; }
+    if (!fileInput.files.length) { alert('Select one or more files first.'); return; }
     _startTimer();
     try {
-      const form = new FormData();
-      form.append('file', fileInput.files[0]);
+      const form = _buildCountForm();
       form.append('include_by_status', '1');
-      const res = await _authFetch('/api/upload-count', {
+      const res = await fetch(apiPath('/api/upload-count'), {
         method: 'POST',
-        headers: {'Authorization': 'Bearer ' + token},
         body: form
       });
       let data;
@@ -1331,7 +1807,7 @@ HTML_PAGE = """<!doctype html>
         document.getElementById('countOut').textContent = 'Error: ' + (data.error || 'Upload failed');
         return;
       }
-      document.getElementById('countOut').textContent = data.output;
+      _renderCountOutput(data.output);
       if (data.pg_loaded === 'pending' && data.pg_message) {
         const info = document.createElement('div');
         info.style.cssText = 'background:#E8F0FE; border:1px solid #2741E7; border-radius:4px; padding:10px; margin-bottom:10px; color:#1a1a2e; font-size:0.9rem;';
@@ -1355,10 +1831,10 @@ HTML_PAGE = """<!doctype html>
 
   // --- NetBox SSE ---
   function _startNetboxSSE(url) {
-    const out = document.getElementById('netboxOut');
     const spinner = document.getElementById('netboxSpinner');
     const statusText = document.getElementById('netboxStatusText');
-    out.textContent = '';
+    _netboxTextBuffer = '';
+    document.getElementById('netboxOut').innerHTML = '';
     spinner.classList.add('active');
     statusText.textContent = 'Querying...';
 
@@ -1370,8 +1846,24 @@ HTML_PAGE = """<!doctype html>
         statusText.textContent = 'Done.';
         return;
       }
-      out.textContent += JSON.parse(e.data);
-      out.scrollTop = out.scrollHeight;
+      const msg = JSON.parse(e.data);
+      if (msg && typeof msg === 'object' && msg._type === 'csv_ready') {
+        msg.files.forEach(f => {
+          const blob = new Blob([f.content], {type: 'text/csv'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = f.name;
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+        statusText.textContent = 'Done. ' + msg.files.length + ' CSV file(s) downloaded.';
+        return;
+      }
+      _netboxTextBuffer += msg;
+      _renderNetboxOutput(_netboxTextBuffer);
+      const nb = document.getElementById('netboxOut');
+      nb.scrollTop = nb.scrollHeight;
     };
     es.onerror = () => {
       es.close();
@@ -1384,13 +1876,13 @@ HTML_PAGE = """<!doctype html>
     const site = document.getElementById('netboxSite').value.trim() || 'us-west-09a';
     const activeOnly = document.getElementById('netboxActiveOnly').checked ? 'true' : 'false';
     const opticLoc = document.getElementById('netboxOpticLocations').checked ? 'true' : 'false';
-    _startNetboxSSE('/api/stream/netbox?site=' + encodeURIComponent(site) + '&active_only=' + activeOnly + '&include_optic_locations=' + opticLoc);
+    _startNetboxSSE(apiPath('/api/stream/netbox?site=' + encodeURIComponent(site) + '&active_only=' + activeOnly + '&include_optic_locations=' + opticLoc));
   }
 
   function streamAllSites() {
     const activeOnly = document.getElementById('netboxActiveOnly').checked ? 'true' : 'false';
     const opticLoc = document.getElementById('netboxOpticLocations').checked ? 'true' : 'false';
-    _startNetboxSSE('/api/stream/all-sites?active_only=' + activeOnly + '&include_optic_locations=' + opticLoc);
+    _startNetboxSSE(apiPath('/api/stream/all-sites?active_only=' + activeOnly + '&include_optic_locations=' + opticLoc));
   }
 
   // --- Rack Analyzer ---
@@ -1443,7 +1935,7 @@ HTML_PAGE = """<!doctype html>
     form.append('room', _bsLastResult.room);
 
     try {
-      const res = await fetch('/api/buildsheet/layout', { method: 'POST', body: form });
+      const res = await fetch(apiPath('/api/buildsheet/layout'), { method: 'POST', body: form });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
         status.textContent = 'Error: ' + (json.error || res.statusText);
@@ -1479,7 +1971,7 @@ HTML_PAGE = """<!doctype html>
     form.append('room', _bsLastResult.room);
 
     try {
-      const res = await fetch('/api/buildsheet/dh', { method: 'POST', body: form });
+      const res = await fetch(apiPath('/api/buildsheet/dh'), { method: 'POST', body: form });
       const json = await res.json();
       if (!res.ok) { status.textContent = 'Error: ' + (json.error || 'Unknown'); return; }
       const d = json.data;
@@ -1557,6 +2049,16 @@ function downloadCableMapCsv(type) {
     _triggerDownload(_rowsToCsv(rows), prefix + '_' + _bsLastResult.room + '_rack' + _bsLastResult.rack + '.csv');
   }
 
+  function downloadOpticSummary() {
+    if (!_bsLastResult) return;
+    const d = _bsLastResult;
+    const rows = [['Optic Type', 'Count']];
+    Object.entries(d.optic_summary || {}).forEach(([optic, count]) => rows.push([optic, count]));
+    rows.push(['', '']);
+    (d.optic_locations || []).forEach(item => rows.push([item.location, item.port, item.optic]));
+    _triggerDownload(_rowsToCsv(rows), 'optic_summary_' + d.room + '_rack' + d.rack + '.csv');
+  }
+
   function downloadLabels(type) {
     if (!_bsLastResult) return;
     const isInternal = type === 'internal';
@@ -1590,9 +2092,8 @@ function downloadCableMapCsv(type) {
     form.append('rack', rack);
 
     try {
-      const res = await fetch('/api/buildsheet', {
+      const res = await fetch(apiPath('/api/buildsheet'), {
         method: 'POST',
-        headers: token ? {'Authorization': 'Bearer ' + token} : {},
         body: form
       });
       const json = await res.json();
@@ -1742,24 +2243,235 @@ function downloadCableMapCsv(type) {
 
     // Internal cables
     document.getElementById('bsInternalCount').textContent = d.internal_count;
-    document.getElementById('bsInternalOut').textContent = (d.internal_labels || []).join('\\n') || '(none)';
+    const internalBody = document.getElementById('bsInternalBody');
+    internalBody.innerHTML = '';
+    if ((d.internal_cables || []).length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      td.style.cssText = 'padding:8px; color:#747283; text-align:center; border:1px solid #CDCED6;';
+      td.textContent = '(none)';
+      tr.appendChild(td); internalBody.appendChild(tr);
+    } else {
+      (d.internal_cables || []).forEach(c => {
+        const tr = document.createElement('tr');
+        [c.a_loc, c.a_port, '→', c.z_loc, c.z_port, c.cable_type, c.status].forEach((val, i) => {
+          const td = document.createElement('td');
+          td.style.cssText = 'padding:4px 8px; border:1px solid #CDCED6;' + (i === 2 ? ' text-align:center; color:#aaa;' : '');
+          td.textContent = val || '';
+          if (i === 6 && (val || '').toLowerCase().startsWith('cable not run')) td.style.background = '#DAE5FF';
+          tr.appendChild(td);
+        });
+        internalBody.appendChild(tr);
+      });
+    }
     document.getElementById('bsInternalSection').style.display = '';
 
     // Cab-to-cab cables
     document.getElementById('bsCabCount').textContent = d.cab_to_cab_count;
-    document.getElementById('bsCabOut').textContent = (d.cab_to_cab_labels || []).join('\\n') || '(none)';
+    const cabBody = document.getElementById('bsCabBody');
+    cabBody.innerHTML = '';
+    if ((d.cab_to_cab_cables || []).length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 8;
+      td.style.cssText = 'padding:8px; color:#747283; text-align:center; border:1px solid #CDCED6;';
+      td.textContent = '(none)';
+      tr.appendChild(td); cabBody.appendChild(tr);
+    } else {
+      function _rackNum(loc) {
+        const parts = (loc || '').split(':');
+        return parts.length >= 2 ? (parts[1].replace(/^0+/, '') || parts[1]) : '';
+      }
+      // Sort by remote rack number numerically so bundles group together
+      const sortedCab = [...(d.cab_to_cab_cables || [])].sort((a, b) => {
+        const sa = a.rack_side || 'a', sb = b.rack_side || 'a';
+        const ra = parseInt(_rackNum(sa === 'a' ? a.z_loc : a.a_loc)) || 0;
+        const rb = parseInt(_rackNum(sb === 'a' ? b.z_loc : b.a_loc)) || 0;
+        return ra - rb;
+      });
+      const bundleColors = ['#ffffff', '#F5F7FF'];
+      let lastBundle = null, colorIdx = 0;
+      sortedCab.forEach(c => {
+        const side = c.rack_side || 'a';
+        const thisLoc  = side === 'a' ? c.a_loc  : c.z_loc;
+        const thisPort = side === 'a' ? c.a_port : c.z_port;
+        const remLoc   = side === 'a' ? c.z_loc  : c.a_loc;
+        const remPort  = side === 'a' ? c.z_port : c.a_port;
+        const remRack = _rackNum(remLoc) || 'Unknown';
+        const bundle = 'Bundle: ' + _rackNum(thisLoc) + ' to ' + remRack;
+        if (bundle !== lastBundle) { colorIdx = (colorIdx + 1) % 2; lastBundle = bundle; }
+        const rowBg = bundleColors[colorIdx];
+        const tr = document.createElement('tr');
+        const MISSING = 'Cutsheet Data Missing';
+        [bundle, thisLoc, thisPort, '→', remLoc || MISSING, remPort || MISSING, c.cable_type, c.status].forEach((val, i) => {
+          const td = document.createElement('td');
+          td.style.cssText = 'padding:4px 8px; border:1px solid #CDCED6; background:' + rowBg + ';'
+            + (i === 0 ? ' font-weight:bold; white-space:nowrap;' : '')
+            + (i === 3 ? ' text-align:center; color:#aaa;' : '')
+            + ([4, 5].includes(i) && val === MISSING ? ' color:#cc7a00; font-style:italic;' : '');
+          td.textContent = val || '';
+          if (i === 7 && (val || '').toLowerCase().startsWith('cable not run')) td.style.background = '#DAE5FF';
+          tr.appendChild(td);
+        });
+        cabBody.appendChild(tr);
+      });
+    }
     document.getElementById('bsCabSection').style.display = '';
+  }
+
+  // --- IB Analyzer ---
+
+  async function runIBQuery() {
+    const file = document.getElementById('ibFile').files[0];
+    const device = document.getElementById('ibDevice').value.trim();
+    if (!file)   { alert('Select the IB Build Sheet file.'); return; }
+    if (!device) { alert('Enter a device name (e.g. S2.1.1).'); return; }
+
+    const btn = document.getElementById('ibBtn');
+    btn.disabled = true;
+    document.getElementById('ibStatus').textContent = 'Searching across all sheets...';
+    ['ibOpticSection', 'ibConnSection'].forEach(id => document.getElementById(id).style.display = 'none');
+
+    const form = new FormData();
+    form.append('file', file);
+    form.append('device', device);
+
+    try {
+      const res = await fetch(apiPath('/api/ib-query'), { method: 'POST', body: form });
+      const json = await res.json();
+      if (!res.ok) {
+        document.getElementById('ibStatus').textContent = 'Error: ' + (json.error || 'Unknown error');
+        return;
+      }
+      _renderIBResult(json.data);
+      document.getElementById('ibStatus').textContent =
+        'Done — ' + json.data.total + ' connection' + (json.data.total === 1 ? '' : 's') + ' found.';
+    } catch(e) {
+      document.getElementById('ibStatus').textContent = 'Request failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function _renderIBResult(d) {
+    document.getElementById('ibDeviceLabel').textContent = d.device;
+
+    // Optic summary
+    const opticBody = document.getElementById('ibOpticBody');
+    opticBody.innerHTML = '';
+    Object.entries(d.optic_summary || {}).forEach(([type, count]) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td style="padding:4px 8px; border:1px solid #CDCED6;">' + type + '</td>' +
+        '<td style="padding:4px 8px; border:1px solid #CDCED6; text-align:right; font-weight:bold;">' + count + '</td>';
+      opticBody.appendChild(tr);
+    });
+    document.getElementById('ibOpticSection').style.display = '';
+
+    // Connections
+    document.getElementById('ibConnCount').textContent = d.total;
+    const connBody = document.getElementById('ibConnBody');
+    connBody.innerHTML = '';
+    (d.connections || []).forEach((c, i) => {
+      const tr = document.createElement('tr');
+      if (i % 2 === 1) tr.style.background = '#FAFAFA';
+      [c.device_port, '→', c.remote, c.remote_port, c.optic, c.cable, c.status, c.sheet]
+        .forEach((val, ci) => {
+          const td = document.createElement('td');
+          td.style.cssText = 'padding:4px 8px; border:1px solid #CDCED6;'
+            + (ci === 1 ? ' text-align:center; color:#aaa;' : '')
+            + ([0, 3].includes(ci) ? ' font-family:monospace;' : '')
+            + (ci === 7 ? ' font-size:0.8rem; color:#747283;' : '');
+          td.textContent = val || '';
+          tr.appendChild(td);
+        });
+      connBody.appendChild(tr);
+    });
+    document.getElementById('ibConnSection').style.display = '';
+  }
+
+  // --- RoCE Analyzer ---
+
+  async function runRoCEQuery() {
+    const file = document.getElementById('roceFile').files[0];
+    const loc  = document.getElementById('roceLoc').value.trim();
+    if (!file) { alert('Select the RoCE Build Sheet file.'); return; }
+    if (!loc)  { alert('Enter a device location (e.g. dh202:003:37).'); return; }
+
+    const btn = document.getElementById('roceBtn');
+    btn.disabled = true;
+    document.getElementById('roceStatus').textContent = 'Searching across all sheets...';
+    ['roceOpticSection', 'roceConnSection'].forEach(id => document.getElementById(id).style.display = 'none');
+
+    const form = new FormData();
+    form.append('file', file);
+    form.append('loc', loc);
+
+    try {
+      const res = await fetch(apiPath('/api/roce-query'), { method: 'POST', body: form });
+      const json = await res.json();
+      if (!res.ok) {
+        document.getElementById('roceStatus').textContent = 'Error: ' + (json.error || 'Unknown error');
+        return;
+      }
+      _renderRoCEResult(json.data);
+      document.getElementById('roceStatus').textContent =
+        'Done — ' + json.data.total + ' connection' + (json.data.total === 1 ? '' : 's') + ' found.';
+    } catch(e) {
+      document.getElementById('roceStatus').textContent = 'Request failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function _renderRoCEResult(d) {
+    document.getElementById('roceLocLabel').textContent = d.location;
+    document.getElementById('roceDnsLabel').textContent = d.dns_name ? '(' + d.dns_name + ')' : '';
+
+    // Optic summary
+    const opticBody = document.getElementById('roceOpticBody');
+    opticBody.innerHTML = '';
+    Object.entries(d.optic_summary || {}).forEach(([type, count]) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td style="padding:4px 8px; border:1px solid #CDCED6;">' + type + '</td>' +
+        '<td style="padding:4px 8px; border:1px solid #CDCED6; text-align:right; font-weight:bold;">' + count + '</td>';
+      opticBody.appendChild(tr);
+    });
+    document.getElementById('roceOpticSection').style.display = '';
+
+    // Connections
+    document.getElementById('roceConnCount').textContent = d.total;
+    const connBody = document.getElementById('roceConnBody');
+    connBody.innerHTML = '';
+    (d.connections || []).forEach((c, i) => {
+      const tr = document.createElement('tr');
+      if (i % 2 === 1) tr.style.background = '#FAFAFA';
+      [c.device_port, c.device_connector, c.device_interface, c.device_optic,
+       '→', c.remote_loc, c.remote_port, c.remote_optic, c.status, c.sheet]
+        .forEach((val, ci) => {
+          const td = document.createElement('td');
+          td.style.cssText = 'padding:4px 8px; border:1px solid #CDCED6;'
+            + (ci === 4 ? ' text-align:center; color:#aaa;' : '')
+            + ([0, 1, 2, 6].includes(ci) ? ' font-family:monospace;' : '')
+            + (ci === 9 ? ' font-size:0.8rem; color:#747283;' : '');
+          td.textContent = val || '';
+          tr.appendChild(td);
+        });
+      connBody.appendChild(tr);
+    });
+    document.getElementById('roceConnSection').style.display = '';
   }
 
   // --- AI Q&A ---
   async function askAi() {
-    if (!token) { alert('Verify identity first.'); return; }
     const q = document.getElementById('question').value.trim();
     if (!q) { alert('Enter a question.'); return; }
     document.getElementById('qaStatus').textContent = 'Thinking...';
-    const res = await fetch('/api/ask', {
+    const res = await fetch(apiPath('/api/ask'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({question: q})
     });
     const data = await res.json();
@@ -1792,7 +2504,6 @@ function downloadCableMapCsv(type) {
 
     const qaOutEl = document.getElementById('qaOut');
     qaOutEl.textContent =
-      'User: ' + (r.user || '') + '\\n' +
       'Time: ' + ts + '\\n' +
       (stats ? stats + '\\n' : '') +
       '\\n' + (r.answer || '');
@@ -1883,6 +2594,26 @@ def _start_netbox_scheduler():
 
 # Start the scheduler when the app module is imported (e.g. by gunicorn).
 _start_netbox_scheduler()
+
+# ---------------------------------------------------------------------------
+# WSGI entrypoint
+# ---------------------------------------------------------------------------
+# Canvas proxies requests to the container WITH the BASE_PATH prefix intact
+# (e.g. /canvas-apps/atlas/api/health). DispatcherMiddleware strips that
+# prefix so all Flask routes stay unprefixed and work identically in both
+# Canvas and local dev.
+# When BASE_PATH is unset (local Docker Compose / direct python run),
+# `application` is just the Flask app itself — no behaviour change.
+_base_path = os.getenv("BASE_PATH", "").rstrip("/")
+if _base_path:
+    from werkzeug.middleware.dispatcher import DispatcherMiddleware
+    from werkzeug.wrappers import Response as _WerkzeugResponse
+    application = DispatcherMiddleware(
+        _WerkzeugResponse("Not Found", status=404),
+        {_base_path: app},
+    )
+else:
+    application = app
 
 
 if __name__ == "__main__":

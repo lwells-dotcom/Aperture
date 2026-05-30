@@ -16,6 +16,7 @@ This file does NOT maintain its own alias dictionaries.
 """
 
 import logging
+import os
 
 import pandas as pd
 from typing import Dict, List, Any, Optional, Tuple
@@ -29,6 +30,17 @@ from cutsheet_profiles import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# Optional Cython-compiled inner loop. Built by setup.py in the Docker
+# builder stage; ATLAS_NORMALIZER_FORCE_PY=1 disables it for benchmarks.
+_FAST_PROCESS_ROWS = None
+if not os.getenv("ATLAS_NORMALIZER_FORCE_PY"):
+    try:
+        from cutsheet_normalizer_fast import process_rows as _FAST_PROCESS_ROWS  # type: ignore
+        log.info("cutsheet_normalizer: using Cython fast path")
+    except ImportError:
+        log.info("cutsheet_normalizer: fast extension not built, using pure Python")
 
 
 # ---------------------------------------------------------------------------
@@ -159,28 +171,57 @@ def normalize_cutsheet(df: pd.DataFrame) -> Dict[str, Any]:
     z_loc_present = data_rows.get(Canon.Z_LOC_CAB_RU, pd.Series(dtype=str)).notna()
     data_rows = data_rows[a_loc_present | z_loc_present]
 
-    devices = {}       # key: (dns_name, loc_cab_ru, model) -> device dict
-    connections = []    # list of connection dicts
-    breakout_seen = set()  # track breakout groups to avoid double-counting optics
+    records = data_rows.to_dict('records')
 
-    for row in data_rows.to_dict('records'):
-        section = row.get("_section", "UNKNOWN")
-        status = _normalize_cell(row.get(Canon.STATUS))
+    if _FAST_PROCESS_ROWS is not None:
+        a_cols = {
+            "device": Canon.A_DEVICE, "loc": Canon.A_LOC_CAB_RU,
+            "model": Canon.A_MODEL, "locode": Canon.A_LOCODE,
+            "port": Canon.A_PORT, "optic": Canon.A_OPTIC,
+        }
+        z_cols = {
+            "device": Canon.Z_DEVICE, "loc": Canon.Z_LOC_CAB_RU,
+            "model": Canon.Z_MODEL, "locode": Canon.Z_LOCODE,
+            "port": Canon.Z_PORT, "optic": Canon.Z_OPTIC,
+        }
+        aux_cols = {
+            "status": Canon.STATUS,
+            "cable": Canon.CABLE_ID,
+            "a_brk_loc_space": "A-BREAKOUT LOC:CAB:RU",
+            "a_brk_loc_nl": "A-BREAKOUT\nLOC:CAB:RU",
+            "a_brk_slot_space": "A-BREAKOUT SLOT:PORT",
+            "a_brk_slot_nl": "A-BREAKOUT\nSLOT:PORT",
+            "z_brk_loc_space": "Z-BREAKOUT LOC:CAB:RU",
+            "z_brk_loc_nl": "Z-BREAKOUT\nLOC:CAB:RU",
+            "z_brk_slot_space": "Z-BREAKOUT SLOT:PORT",
+            "z_brk_slot_nl": "Z-BREAKOUT\nSLOT:PORT",
+        }
+        devices, connections = _FAST_PROCESS_ROWS(
+            records, a_cols, z_cols, aux_cols, normalize_model, _parse_breakout_key
+        )
+    else:
+        devices = {}       # key: (dns_name, loc_cab_ru, model) -> device dict
+        connections = []    # list of connection dicts
+        breakout_seen = set()  # track breakout groups to avoid double-counting optics
 
-        # --- Extract A-side and Z-side devices ---
-        a_device = _extract_device(row, "A")
-        z_device = _extract_device(row, "Z")
+        for row in records:
+            section = row.get("_section", "UNKNOWN")
+            status = _normalize_cell(row.get(Canon.STATUS))
 
-        # --- Register devices (dedup by identity tuple) ---
-        if a_device:
-            _register_device(devices, a_device, section, "A")
-        if z_device:
-            _register_device(devices, z_device, section, "Z")
+            # --- Extract A-side and Z-side devices ---
+            a_device = _extract_device(row, "A")
+            z_device = _extract_device(row, "Z")
 
-        # --- Build connection record ---
-        conn = _build_connection(row, a_device, z_device, section, status, breakout_seen)
-        if conn:
-            connections.append(conn)
+            # --- Register devices (dedup by identity tuple) ---
+            if a_device:
+                _register_device(devices, a_device, section, "A")
+            if z_device:
+                _register_device(devices, z_device, section, "Z")
+
+            # --- Build connection record ---
+            conn = _build_connection(row, a_device, z_device, section, status, breakout_seen)
+            if conn:
+                connections.append(conn)
 
     # Build final device list sorted by location
     device_list = sorted(devices.values(), key=lambda d: (d["loc_cab_ru"], d["dns_name"]))

@@ -5,3 +5,7 @@
 
 pytest>=8.0,<9.0
 graphifyy==0.4.23
+
+# Required to build cutsheet_normalizer_fast.pyx locally. Production
+# builds install Cython inside the Docker builder stage.
+Cython>=3.0,<4.0

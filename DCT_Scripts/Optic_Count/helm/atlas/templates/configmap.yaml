@@ -10,6 +10,12 @@ data:
   # and atlas_web_app.py (reads ATLAS_UPLOAD_DIR) both work.
   DEMO_UPLOAD_DIR: {{ .Values.web.env.uploadDir | quote }}
   ATLAS_UPLOAD_DIR: {{ .Values.web.env.uploadDir | quote }}
+  # Persistent state dir for generated Flask secret fallback and other
+  # per-installation files. Defaults to the uploads PVC mount.
+  ATLAS_STATE_DIR: {{ .Values.web.env.stateDir | default .Values.web.env.uploadDir | quote }}
+  # Non-empty BASE_PATH enables Canvas iframe cookie config (SameSite=None,
+  # Secure). Leave empty for standalone deployments.
+  BASE_PATH: {{ .Values.web.env.basePath | quote }}
   ANTHROPIC_MODEL: {{ .Values.web.env.anthropicModel | quote }}
   SOX_ALWAYS_ON: {{ .Values.web.env.soxAlwaysOn | quote }}
   DEMO_TOKEN_TTL_SECONDS: {{ .Values.secrets.demoTokenTtlSeconds | quote }}

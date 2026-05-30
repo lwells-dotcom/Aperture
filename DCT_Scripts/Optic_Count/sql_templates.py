@@ -110,7 +110,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
             GROUP BY z_device
         ) sub
         ORDER BY connections DESC
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "a_device_list": """
@@ -127,7 +127,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
             GROUP BY a_device
         ) sub
         ORDER BY connections DESC
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "role_lookup": """
@@ -165,7 +165,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
         FROM role_rows
         GROUP BY role, side, device_name
         ORDER BY role, side, device_name
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "device_list": """
@@ -185,7 +185,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
         ) sub
         GROUP BY device_name
         ORDER BY connections DESC
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "device_detail": """
@@ -217,7 +217,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
           AND (%(upload_id)s::bigint IS NULL OR upload_id = %(upload_id)s::bigint)
           AND (a_device ILIKE %(device_pattern)s OR z_device ILIKE %(device_pattern)s)
         ORDER BY section, a_port
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "connection_status": """
@@ -385,7 +385,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
             GROUP BY device_name, model
         ) sub
         ORDER BY connections DESC, device_name
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "link_status": """
@@ -395,7 +395,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
         WHERE site_id = %(site_id)s
           AND (%(upload_id)s::bigint IS NULL OR upload_id = %(upload_id)s::bigint)
         ORDER BY link_status, a_device
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "lldp_neighbor_mismatch": """
@@ -409,7 +409,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
           AND current_neighbor != ''
           AND LOWER(TRIM(current_neighbor)) != LOWER(TRIM(z_device))
         ORDER BY a_device, a_port
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "rack_summary": """
@@ -565,7 +565,7 @@ _SQL_TEMPLATES: Dict[str, str] = {
         ) combined
         GROUP BY device_name, side, source
         ORDER BY source, connection_count DESC, device_name
-        LIMIT 200
+        LIMIT 1000
     """,
 
     "upload_diff": """

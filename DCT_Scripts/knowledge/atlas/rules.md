@@ -316,3 +316,17 @@
   routed to worker 2 which had empty dicts. "No uploaded sheet context" error.
 - Apply: When Postgres is available, always recover state from the database rather
   than relying on per-process memory. Postgres is the shared state layer.
+
+## R41: ANALYZE after every bulk load, before backfill_device_roles (confirmed 2026-05-30)
+- Confirmed: execute_values bulk inserts leave cutsheet_connections/host_inventory with
+  stale reltuples/histograms. As the DB grows, backfill_device_roles' UPDATE...FROM join
+  picks a pathological plan. Measured on a 300k-row DB: a 42k-row backfill took 348.7s;
+  after `ANALYZE` the same backfill took 3.8s (total load 355s -> 12s, ~30x). The first
+  load into an empty table got lucky (24.6s); every subsequent load stalled for minutes.
+- Apply: load_file runs `ANALYZE cutsheet_connections; ANALYZE host_inventory;` in its own
+  committed transaction immediately after the main load commit and before backfill. ANALYZE
+  is cheap (~0.4s) and also keeps downstream user-query plans healthy. Any new bulk-load path
+  must ANALYZE before a stats-sensitive join. Do not rely on autovacuum/autoanalyze timing.
+- Related open bug: load_file's `connections_loaded` return value and the "duplicate rows
+  skipped" log badly under-report actual inserted rows (reported 111/237 vs 174k/42k actually
+  present). Counting bug only; data is intact (cutsheet_connections == cutsheet_raw_rows).

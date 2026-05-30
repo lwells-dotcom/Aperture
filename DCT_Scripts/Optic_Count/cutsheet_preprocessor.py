@@ -330,6 +330,24 @@ _A_OPTIC_CANDIDATES = ("A-OPTIC", "A_OPTIC", "a-optic", "a_optic")
 _Z_OPTIC_CANDIDATES = ("Z-OPTIC", "Z_OPTIC", "z-optic", "z_optic")
 _STATUS_CANDIDATES = ("STATUS", "status", "Status")
 
+# Breakout / loc / port column candidates — Excel headers use newline-wrapped
+# text; normalised forms use a single space.  Both are listed so _find_col
+# works regardless of whether the DataFrame came from a raw xlsx read (which
+# preserves the literal \n) or from a pre-processed source that normalised
+# the header text.
+_A_BREAKOUT_LOC_CANDIDATES = (
+    "A-BREAKOUT\nLOC:CAB:RU", "A-BREAKOUT LOC:CAB:RU",
+    "A_BREAKOUT_LOC", "a-breakout\nloc:cab:ru", "a-breakout loc:cab:ru",
+)
+_Z_BREAKOUT_LOC_CANDIDATES = (
+    "Z-BREAKOUT\nLOC:CAB:RU", "Z-BREAKOUT LOC:CAB:RU",
+    "Z_BREAKOUT_LOC", "z-breakout\nloc:cab:ru", "z-breakout loc:cab:ru",
+)
+_A_LOC_CANDIDATES = ("A-LOC:CAB:RU", "A_LOC", "a-loc:cab:ru")
+_A_PORT_CANDIDATES = ("A-PORT", "A_PORT", "a-port")
+_Z_LOC_CANDIDATES = ("Z-LOC:CAB:RU", "Z_LOC", "z-loc:cab:ru")
+_Z_PORT_CANDIDATES = ("Z-PORT", "Z_PORT", "z-port")
+
 
 def _find_col(df: pd.DataFrame, candidates: tuple) -> Optional[str]:
     """Return the first column name from candidates that exists in df."""
@@ -503,10 +521,12 @@ def normalize_cutsheet_df(df: pd.DataFrame, site_code: Optional[str] = None) -> 
 
 
 def count_optics_independently(df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
-    """Count A-OPTIC and Z-OPTIC as separate physical optics.
+    """Count A-OPTIC and Z-OPTIC as separate physical optics, with breakout deduplication.
 
-    Each non-empty cell in A-OPTIC is 1 optic.  Each non-empty cell in
-    Z-OPTIC is 1 optic.  No deduplication, no COALESCE.
+    When a cable has a breakout panel (A-BREAKOUT LOC:CAB:RU is non-empty), the same
+    A-side port fans out across multiple spreadsheet rows.  The A-optic is counted only
+    once per unique A-LOC:CAB:RU + A-PORT combination.  The same deduplication applies
+    to the Z-side when Z-BREAKOUT LOC:CAB:RU is non-empty.
 
     Returns:
         {
@@ -517,30 +537,77 @@ def count_optics_independently(df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
             "totals": {"a_side": 24451, "z_side": 24416, "grand_total": 48867}
         }
     """
-    a_optic_col = _find_col(df, _A_OPTIC_CANDIDATES)
-    z_optic_col = _find_col(df, _Z_OPTIC_CANDIDATES)
+    a_optic_col    = _find_col(df, _A_OPTIC_CANDIDATES)
+    z_optic_col    = _find_col(df, _Z_OPTIC_CANDIDATES)
+    a_breakout_col = _find_col(df, _A_BREAKOUT_LOC_CANDIDATES)
+    z_breakout_col = _find_col(df, _Z_BREAKOUT_LOC_CANDIDATES)
+    a_loc_col      = _find_col(df, _A_LOC_CANDIDATES)
+    a_port_col     = _find_col(df, _A_PORT_CANDIDATES)
+    z_loc_col      = _find_col(df, _Z_LOC_CANDIDATES)
+    z_port_col     = _find_col(df, _Z_PORT_CANDIDATES)
 
     by_type: Dict[str, Dict[str, int]] = defaultdict(lambda: {"a_side": 0, "z_side": 0, "total": 0})
     total_a = 0
     total_z = 0
 
+    def _clean(col: str):
+        vals = df[col].fillna("").astype(str).str.strip()
+        return vals.where(vals.str.lower() != "nan", "")
+
     if a_optic_col:
-        a_vals = df[a_optic_col].fillna("").astype(str).str.strip()
-        a_vals = a_vals.where(a_vals.str.lower() != "nan", "")
-        a_counts = a_vals[a_vals != ""].value_counts()
-        for optic, count in a_counts.items():
-            by_type[optic]["a_side"] += int(count)
-            by_type[optic]["total"] += int(count)
-            total_a += int(count)
+        a_optic_vals = _clean(a_optic_col)
+        if a_breakout_col and a_loc_col and a_port_col:
+            a_breakout_vals = _clean(a_breakout_col)
+            a_loc_vals      = _clean(a_loc_col)
+            a_port_vals     = _clean(a_port_col)
+            seen_a: set = set()
+            for optic, breakout, loc, port in zip(
+                a_optic_vals, a_breakout_vals, a_loc_vals, a_port_vals
+            ):
+                if not optic:
+                    continue
+                if breakout:
+                    key = loc + "\x00" + port
+                    if key in seen_a:
+                        continue
+                    seen_a.add(key)
+                by_type[optic]["a_side"] += 1
+                by_type[optic]["total"]  += 1
+                total_a += 1
+        else:
+            # Breakout columns not found — fall back to counting every non-empty cell
+            a_counts = a_optic_vals[a_optic_vals != ""].value_counts()
+            for optic, count in a_counts.items():
+                by_type[optic]["a_side"] += int(count)
+                by_type[optic]["total"]  += int(count)
+                total_a += int(count)
 
     if z_optic_col:
-        z_vals = df[z_optic_col].fillna("").astype(str).str.strip()
-        z_vals = z_vals.where(z_vals.str.lower() != "nan", "")
-        z_counts = z_vals[z_vals != ""].value_counts()
-        for optic, count in z_counts.items():
-            by_type[optic]["z_side"] += int(count)
-            by_type[optic]["total"] += int(count)
-            total_z += int(count)
+        z_optic_vals = _clean(z_optic_col)
+        if z_breakout_col and z_loc_col and z_port_col:
+            z_breakout_vals = _clean(z_breakout_col)
+            z_loc_vals      = _clean(z_loc_col)
+            z_port_vals     = _clean(z_port_col)
+            seen_z: set = set()
+            for optic, breakout, loc, port in zip(
+                z_optic_vals, z_breakout_vals, z_loc_vals, z_port_vals
+            ):
+                if not optic:
+                    continue
+                if breakout:
+                    key = loc + "\x00" + port
+                    if key in seen_z:
+                        continue
+                    seen_z.add(key)
+                by_type[optic]["z_side"] += 1
+                by_type[optic]["total"]  += 1
+                total_z += 1
+        else:
+            z_counts = z_optic_vals[z_optic_vals != ""].value_counts()
+            for optic, count in z_counts.items():
+                by_type[optic]["z_side"] += int(count)
+                by_type[optic]["total"]  += int(count)
+                total_z += int(count)
 
     return {
         "by_type": dict(by_type),
@@ -632,10 +699,9 @@ def format_optic_count_text(optic_counts: Dict[str, Any]) -> str:
     lines.append(f"Grand total optics:  {totals['grand_total']}")
     lines.append("")
     lines.append(
-        "Note: These totals count every non-empty A-OPTIC / Z-OPTIC cell in the sheet "
-        "(breakout fan-out can repeat the same optic across rows). Atlas Q&A / Postgres "
-        "optic_count collapses breakout rows to one physical optic per port key, so "
-        "Q&A side totals are often lower than the numbers above."
+        "Note: A-side optics on breakout fan-out rows are deduplicated by port key "
+        "(one physical optic per A-LOC:CAB:RU + A-PORT). Z-side breakouts are "
+        "deduplicated similarly."
     )
 
     return "\n".join(lines)

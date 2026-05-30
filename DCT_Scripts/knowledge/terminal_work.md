@@ -3,6 +3,40 @@ Merged into Obsidian vault periodically. Each entry captures work done in a Clau
 
 ---
 
+## 2026-05-30 - Multi-cutsheet GUI upload + counter/site-code fixes
+
+Session context: Follow-up to the canvas mirror + stress test. User needs the GUI to accept multiple cutsheets (their case: 4 US-LZL01 sheets) and query them together, plus button up the two findings from the stress test.
+
+What changed:
+- atlas_data_loader.py: fixed `load_cutsheet` row counter (was reading only the last execute_values page → reported ~111/237; now `SELECT count(*) WHERE upload_id`). Added `load_files(file_paths, site_code, uploaded_by)` that loads MULTIPLE cutsheets into ONE upload_id (deactivate prior once, ANALYZE+backfill+refresh once) + `_read_cutsheet_frames` helper. This is required because build_postgres_context defaults upload_id=None to the LATEST upload — so multiple sheets must share one upload_id to be queried together. Added `deactivate_prior` flag to load_file.
+- atlas_web_app.py: `/api/upload-count` now accepts `request.files.getlist("file")` (multiple) + optional `site_code` form field (fixes the all-files-resolve-to-UNKNOWN collision). New `_run_postgres_batch_job` calls load_files; session's USER_SITE points at the one combined upload so /api/ask sees all sheets. GUI HTML: `multiple` on the file input + a "Site code" text field; JS `_buildCountForm()` sends all files + site_code (used by both Count and Count-by-status).
+
+What's different now:
+GUI users can select 4 cutsheets at once, label them (e.g. US-LZL01), and ask questions across all of them. Verified: 4 files → 1 upload, 300,138 connections + 27,604 hosts, /api/ask returns "300,138 total connections … 12,419 devices, 236 sections" and aggregated optic types spanning master+RoCE. Verified master/RoCE are disjoint (0 shared connection keys) so combining doesn't double-count.
+
+Minor behavior change: the multi-file path (load_files) does not have load_file's duplicate-file-hash skip, so re-uploading an identical batch reloads it (replaces the prior, since deactivate runs first). Acceptable for the GUI replace-site workflow.
+
+Next up: commit the mirror + these fixes (still uncommitted on fix/atlas-audit-security-routing).
+
+---
+
+## 2026-05-30 - Canvas full-mirror + US-LZL01 stress test (300K rows) + backfill perf fix
+
+Session context: Bring local Optic_Count app up to parity with the canvas monorepo version (`/Users/lwells/canvas/apps/dc-operations/atlas`, branch feat/atlas/ask-ai-and-cython), then stress-test with 4 US-LZL01 cutsheets. Full mirror chosen (session auth, Atlas branding, Cython fast path, IB/RoCE analyzers, hybrid /api/ask routing, BASE_PATH iframe support).
+
+What changed:
+Mirrored canvas → local via rsync (excluded .env, .canvas, .omc, __pycache__, *.so). Adopted canvas multi-stage Dockerfile (Cython builder, entry `atlas_web_app:application`) + docker-compose. Rebuilt stack; verified Cython `.so` loads, /api/health ok, standalone routing (BASE_PATH unset → no PrefixMiddleware / SameSite=Lax). Loaded all 4 cutsheets via atlas_data_loader.load_file under distinct site codes (US-LZL01-08A/08B + -ROCE each) because all 4 extract to site_code=UNKNOWN and would otherwise deactivate each other. Final DB: 300,138 connections, 27,604 hosts.
+Found + fixed a major ingest perf bug: backfill_device_roles took 348.7s on 08B (vs 24.6s total for the larger 08A) because execute_values leaves stale planner stats, forcing a pathological join plan. Added `ANALYZE cutsheet_connections; ANALYZE host_inventory;` in load_file right after the bulk-load commit, before backfill. Re-verified: 08B load 355s → 12s (backfill 348.7s → 3.8s). atlas_data_loader.py only.
+
+What's different now:
+Local is a faithful replica of the deployed canvas app and ingests at production scale (~300K rows) without the multi-minute backfill stall. Query battery (12 types) returns sub-second; HTTP session→upload→ask→LLM path returns grounded answers; RoCE analyzer works (loc dh202:003:37 → 16). pytest: 31 passed, 5 pre-existing failures (test_location_rack_routing ×3, test_model_search_semantics ×2), 1 host-only collection error (test_rack_context_bridge needs full web deps absent from host .venv; imports fine in container).
+
+Open findings (not yet fixed): (1) load_file return `connections_loaded` and the "duplicate rows skipped" log badly under-report actual rows (e.g. reported 111/237 vs 174K/42K loaded) — cosmetic but misleading. (2) Real cutsheets carry no detectable site code → load as UNKNOWN and collide via the per-site is_active soft-delete; HTTP upload path has no site_code override.
+
+Next up: decide where the mirror lands in git (currently uncommitted on branch fix/atlas-audit-security-routing) and whether to fix the connections_loaded counter + UNKNOWN site-code handling.
+
+---
+
 ## 2026-04-20 - Routing hardening for human phrasing, rack/location precision, and model-count semantics
 
 Session context: Senior-architect review of whether the Flask + Postgres routing path can answer real human questions from the Ellendale cutsheets. Focus was on natural phrasing users actually type (`SN2201s`, `human verified cables`, `rack 41`, `dh2 041`) and on preventing the SQL layer from returning technically valid but misleading results.
