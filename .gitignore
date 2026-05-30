@@ -12,6 +12,8 @@
 raw/
 *.xlsx
 *.log
+*.tmp
+.~lock.*#
 
 # Environment
 .env*
