@@ -1057,7 +1057,7 @@ HTML_PAGE = """<!doctype html>
 <head>
   <meta charset="utf-8"/>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔬</text></svg>"/>
-  <title>Atlas — DCT Infrastructure Intelligence</title>
+  <title>Aperture — DCT Infrastructure Intelligence</title>
   <style>
     * { box-sizing: border-box; }
     body { font-family: Arial, sans-serif; max-width: 1000px; margin: 24px auto; padding: 0 12px; background: #F9FAFC; color: #343338; }
@@ -1090,7 +1090,7 @@ HTML_PAGE = """<!doctype html>
   </style>
 </head>
 <body>
-  <h1>Atlas — DCT Infrastructure Intelligence <a href="https://coreweave.atlassian.net/wiki/spaces/~71202033c11abfc5ac4e7295722dd23b043a53/pages/1702789201/Atlas+DCT+Infrastructure+Intelligence+User+Guide" target="_blank" rel="noopener" style="font-size:0.55em; font-weight:normal; vertical-align:middle; margin-left:14px; background:#1868db; color:#fff; padding:4px 12px; border-radius:5px; text-decoration:none;">Documentation</a></h1>
+  <h1>Aperture — DCT Infrastructure Intelligence <a href="https://coreweave.atlassian.net/wiki/spaces/~71202033c11abfc5ac4e7295722dd23b043a53/pages/1702789201/Atlas+DCT+Infrastructure+Intelligence+User+Guide" target="_blank" rel="noopener" style="font-size:0.55em; font-weight:normal; vertical-align:middle; margin-left:14px; background:#1868db; color:#fff; padding:4px 12px; border-radius:5px; text-decoration:none;">Documentation</a></h1>
 
   <nav>
     <a class="active" onclick="showPage('main', this)">Optic Inventory</a>
@@ -1146,7 +1146,7 @@ HTML_PAGE = """<!doctype html>
 
   <!-- 4. AI Q&A -->
   <div class="section">
-    <h3>Ask Atlas (Sheet Context)</h3>
+    <h3>Ask Aperture (Sheet Context)</h3>
     <input type="text" id="question" placeholder="Ask a question about your loaded cutsheet..."/>
     <div class="btn-row">
       <button onclick="askAi()">Ask AI</button>

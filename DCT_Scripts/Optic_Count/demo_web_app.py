@@ -459,7 +459,7 @@ def index():
 <html>
 <head>
   <meta charset='utf-8'/>
-  <title>Atlas - DCT Infrastructure Intelligence</title>
+  <title>Aperture - DCT Infrastructure Intelligence</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: 24px auto; background: #F9FAFC; color: #343338; }
     .box { border: 1px solid #CDCED6; padding: 12px; margin-bottom: 12px; border-radius: 6px; background: #fff; }
@@ -511,7 +511,7 @@ def index():
   </style>
 </head>
 <body>
-  <h2>Atlas - DCT Infrastructure Intelligence</h2>
+  <h2>Aperture - DCT Infrastructure Intelligence</h2>
   <div class='box'>
     <h3>1) Verify Identity (PIN)</h3>
     <input id='username' placeholder='username' value='Lamar'/>
@@ -528,9 +528,9 @@ def index():
   </div>
 
   <div class='box'>
-    <h3>3) Ask Atlas</h3>
-    <textarea id='question' rows='3' placeholder='Ask Atlas about your infrastructure data'></textarea>
-    <button onclick='askAi()'>Ask Atlas</button>
+    <h3>3) Ask Aperture</h3>
+    <textarea id='question' rows='3' placeholder='Ask Aperture about your infrastructure data'></textarea>
+    <button onclick='askAi()'>Ask Aperture</button>
     <button id='controlsBtn' class='controls-btn' style='display:none;' onclick='openControlsModal()'>Top 3 Controls</button>
     <pre id='qaOut'></pre>
   </div>
@@ -676,7 +676,7 @@ def index():
       if (data.postgres.profile) output += ' (profile: ' + data.postgres.profile.name + ')';
       output += '\\n';
     }
-    output += 'Ready for questions. Ask Atlas anything about this cutsheet.';
+    output += 'Ready for questions. Ask Aperture anything about this cutsheet.';
     document.getElementById('countOut').innerText = output;
   }
 
